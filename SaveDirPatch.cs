@@ -64,10 +64,10 @@ public static class SaveDirPatch
             Log.LogMessage(LogLevel.Info, LogType.Generic,
                 $"[SaveDirPatch] Save directory redirected to '{saveDir}'");
         }
-        catch (Exception ex)
+        catch (Exception e)
         {
             Log.LogMessage(LogLevel.Error, LogType.Generic,
-                $"[SaveDirPatch] Exception during redirect: {ex.Message}");
+                $"[SaveDirPatch] Exception during redirect: {e.Message}");
         }
     }
 

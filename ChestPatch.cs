@@ -36,47 +36,54 @@ public static class ChestPatch
     /// </summary>
     public static void RegisterReflectionCache()
     {
-        // -- RunManager --
+        CacheRunManagerFields();
+        CacheRelicCollectionFields();
+    }
+
+    private static void CacheRunManagerFields()
+    {
         _runManagerType = Type.GetType("MegaCrit.Sts2.Core.Runs.RunManager, sts2", false);
-        if (_runManagerType != null)
+        if (_runManagerType == null) return;
+
+        const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic
+                               | BindingFlags.Instance | BindingFlags.Static
+                               | BindingFlags.FlattenHierarchy;
+
+        _instanceProp = _runManagerType.GetProperty("Instance", all);
+
+        // Try property first, then field for State
+        _stateProp = _runManagerType.GetProperty("State", all);
+        if (_stateProp == null)
+            _stateField = _runManagerType.GetField("State", all)
+                       ?? _runManagerType.GetField("_state", all)
+                       ?? _runManagerType.GetField("_runState", all);
+
+        // Resolve Players from the State type
+        var stateType = _stateProp?.PropertyType ?? _stateField?.FieldType;
+        if (stateType != null)
         {
-            const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic
-                                   | BindingFlags.Instance | BindingFlags.Static
-                                   | BindingFlags.FlattenHierarchy;
-
-            _instanceProp = _runManagerType.GetProperty("Instance", all);
-
-            // Try property first, then field for State
-            _stateProp = _runManagerType.GetProperty("State", all);
-            if (_stateProp == null)
-                _stateField = _runManagerType.GetField("State", all)
-                           ?? _runManagerType.GetField("_state", all)
-                           ?? _runManagerType.GetField("_runState", all);
-
-            // Resolve Players from the State type
-            var stateType = _stateProp?.PropertyType ?? _stateField?.FieldType;
-            if (stateType != null)
-            {
-                _playersListProp = stateType.GetProperty("Players", all);
-                if (_playersListProp == null)
-                    _playersListField = stateType.GetField("Players", all)
-                                     ?? stateType.GetField("_players", all);
-            }
-
-            // Log all State-like members to help diagnose when things go wrong
-            var stateMembers = string.Join(", ", _runManagerType
-                .GetMembers(all)
-                .Where(m => m.Name.ToLower().Contains("state") || m.Name.ToLower().Contains("player"))
-                .Select(m => m.Name));
-            Log.LogMessage(LogLevel.Info, LogType.Generic,
-                $"[ChestPatch] RunManager State/Player members: {stateMembers}");
+            _playersListProp = stateType.GetProperty("Players", all);
+            if (_playersListProp == null)
+                _playersListField = stateType.GetField("Players", all)
+                                 ?? stateType.GetField("_players", all);
         }
+
+        // Log all State-like members to help diagnose when things go wrong
+        var stateMembers = string.Join(", ", _runManagerType
+            .GetMembers(all)
+            .Where(m => m.Name.ToLower().Contains("state") || m.Name.ToLower().Contains("player"))
+            .Select(m => m.Name));
+        Log.LogMessage(LogLevel.Info, LogType.Generic,
+            $"[ChestPatch] RunManager State/Player members: {stateMembers}");
+
         Log.LogMessage(LogLevel.Info, LogType.Generic,
             $"[ChestPatch] RunManager cache: Instance={_instanceProp?.Name ?? "null"}, " +
             $"State={_stateProp?.Name ?? _stateField?.Name ?? "null"}, " +
             $"Players={_playersListProp?.Name ?? _playersListField?.Name ?? "null"}");
+    }
 
-        // -- NTreasureRoomRelicCollection --
+    private static void CacheRelicCollectionFields()
+    {
         var collectionType = Type.GetType(
             "MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic.NTreasureRoomRelicCollection, sts2", false);
 
@@ -137,33 +144,26 @@ public static class ChestPatch
     {
         try
         {
-            if (_instanceProp != null)
-            {
-                var rm = _instanceProp.GetValue(null);
-                if (rm != null)
-                {
-                    var state = _stateProp?.GetValue(rm) ?? _stateField?.GetValue(rm);
-                    if (state != null)
-                    {
-                        var players = _playersListProp?.GetValue(state) ?? _playersListField?.GetValue(state);
-                        if (players != null)
-                        {
-                            int count = (int)players.GetType()
-                                .GetProperty("Count")!.GetValue(players)!;
-                            Log.LogMessage(LogLevel.Debug, LogType.Generic,
-                                $"[ChestPatch] GetLoopCount() = {count}");
-                            return count;
-                        }
-                    }
-                }
-            }
+            if (_instanceProp == null) return Sts2Unlimited.MaxPlayersOverride;
+
+            var rm = _instanceProp.GetValue(null);
+            if (rm == null) return Sts2Unlimited.MaxPlayersOverride;
+
+            var state = _stateProp?.GetValue(rm) ?? _stateField?.GetValue(rm);
+            if (state == null) return Sts2Unlimited.MaxPlayersOverride;
+
+            var players = _playersListProp?.GetValue(state) ?? _playersListField?.GetValue(state);
+            if (players == null) return Sts2Unlimited.MaxPlayersOverride;
+
+            int count = (int)players.GetType().GetProperty("Count")!.GetValue(players)!;
+            Log.LogMessage(LogLevel.Debug, LogType.Generic, $"[ChestPatch] GetLoopCount() = {count}");
+            return count;
         }
         catch (Exception e)
         {
-            Log.LogMessage(LogLevel.Warn, LogType.Generic,
-                $"[ChestPatch] GetLoopCount() failed: {e.Message}");
+            Log.LogMessage(LogLevel.Warn, LogType.Generic, $"[ChestPatch] GetLoopCount() failed: {e.Message}");
+            return Sts2Unlimited.MaxPlayersOverride;
         }
-        return Sts2Unlimited.MaxPlayersOverride;
     }
 
     /// <summary>

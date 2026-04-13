@@ -132,13 +132,11 @@ jobs:
           files: Sts2Unlimited.zip
           generate_release_notes: true
 
-      ## Currently disabled due to upload API being disabled
-      # - name: Upload to Nexus Mods
-      #   uses: Nexus-Mods/upload-action@v1.0.0-beta.1.1
-      #   with:
-      #     api_key: ${{ secrets.NEXUS_API_KEY }}
-      #     game_domain_name: slaythespire2
-      #     file_id: 55
-      #     filename: Sts2Unlimited.zip
-      #     version: ${{ steps.version.outputs.version }}
-      #     file_category: main
+      - name: Upload to Nexus Mods
+        uses: Nexus-Mods/upload-action@v1.0.0-beta.3
+        with:
+          api_key: ${{ secrets.NEXUS_API_KEY }}
+          file_group_id: 7166860
+          filename: Sts2Unlimited.zip
+          version: ${{ steps.version.outputs.version }}
+          file_category: main

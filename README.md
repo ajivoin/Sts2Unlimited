@@ -20,6 +20,25 @@ Play **Slay the Spire 2** multiplayer with any number of players. The vanilla ga
    ```
 3. Launch the game — the mod loads automatically
 
+## Known Issues
+
+| Platform | Symptom | Fix |
+|---|---|---|
+| Linux | Mod shows as enabled but errors on startup; lobbies hang on "loading" | [Force-load `libgcc_s`](#linux-force-load-libgcc_s) on the game binary |
+
+### Linux: force-load `libgcc_s`
+
+Harmony generates `/tmp/mm-exhelper.so` at runtime, which needs `_Unwind_RaiseException` from `libgcc_s.so.1`. Godot loads .NET with `RTLD_LOCAL`, so the symbol isn't in the global namespace when the helper is `dlopen`ed and it fails to load. Adding `libgcc_s.so.1` as a direct `NEEDED` entry on the main game binary forces it into the global namespace at startup:
+
+```bash
+sudo dnf install patchelf   # or apt/pacman equivalent
+cd ~/.local/share/Steam/steamapps/common/Slay\ the\ Spire\ 2
+cp SlayTheSpire2 SlayTheSpire2.bak
+patchelf --add-needed libgcc_s.so.1 SlayTheSpire2
+```
+
+Steam game updates overwrite the binary, so re-apply after every update. See [#9](https://github.com/ajivoin/Sts2Unlimited/issues/9) for the full investigation (credit: @pxlnght).
+
 ## Configuration
 
 The easiest way is the **in-game settings menu**: open Settings and use the "Max Players" slider (range: 2–256). Changes save automatically.

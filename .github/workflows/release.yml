@@ -89,7 +89,7 @@ jobs:
           chmod +x .godot-bin/godot
 
       - name: Regenerate PCK with bumped version
-        run: .godot-bin/godot --headless --export-pack "Windows Desktop" sts2unlimited.pck
+        run: .godot-bin/godot --headless --export-pack "Windows Desktop" Sts2Unlimited.pck
 
       - name: Download sts2.dll from release assets
         env:
@@ -120,7 +120,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Sts2Unlimited.json sts2unlimited.pck
+          git add Sts2Unlimited.json Sts2Unlimited.pck
           git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
           git push
 

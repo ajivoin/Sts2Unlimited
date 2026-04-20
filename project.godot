@@ -16,4 +16,4 @@ config/icon="res://icon.svg"
 
 [dotnet]
 
-project/assembly_name="sts2unlimited"
+project/assembly_name="Sts2Unlimited"

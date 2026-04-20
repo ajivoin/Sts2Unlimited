@@ -12,9 +12,9 @@
 
   <Target Name="BundleRelease" AfterTargets="Build">
     <ItemGroup>
-      <ReleaseFiles Include="$(OutDir)sts2unlimited.dll" />
+      <ReleaseFiles Include="$(OutDir)Sts2Unlimited.dll" />
       <ReleaseFiles Include="$(OutDir)0Harmony.dll" />
-      <ReleaseFiles Include="sts2unlimited.pck" />
+      <ReleaseFiles Include="Sts2Unlimited.pck" />
       <ReleaseFiles Include="Sts2Unlimited.json" />
       <ReleaseFiles Include="icon.svg" />
       <ReleaseFiles Include="sts2unlimited.maxplayers.txt" />
@@ -27,9 +27,9 @@
 
   <Target Name="DeployToGame" AfterTargets="BundleRelease" Condition="'$(STS2_MOD_DIR)' != ''">
     <ItemGroup>
-      <DeployFiles Include="$(OutDir)sts2unlimited.dll" />
+      <DeployFiles Include="$(OutDir)Sts2Unlimited.dll" />
       <DeployFiles Include="$(OutDir)0Harmony.dll" />
-      <DeployFiles Include="sts2unlimited.pck" />
+      <DeployFiles Include="Sts2Unlimited.pck" />
       <DeployFiles Include="Sts2Unlimited.json" />
     </ItemGroup>
     <Copy SourceFiles="@(DeployFiles)" DestinationFolder="$(STS2_MOD_DIR)" SkipUnchangedFiles="false" />

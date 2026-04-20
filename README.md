@@ -11,9 +11,9 @@ Play **Slay the Spire 2** multiplayer with any number of players. The vanilla ga
    ```
    mods/
    └── Sts2Unlimited/
-       ├── sts2unlimited.dll
+       ├── Sts2Unlimited.dll
        ├── 0Harmony.dll
-       ├── sts2unlimited.pck
+       ├── Sts2Unlimited.pck
        ├── mod_manifest.json
        ├── icon.svg
        └── sts2unlimited.maxplayers.txt

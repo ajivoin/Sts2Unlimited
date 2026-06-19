@@ -6,19 +6,19 @@ Play **Slay the Spire 2** multiplayer with any number of players. The vanilla ga
 
 ## Installation
 
-1. Download `Sts2Unlimited.zip` from the [latest release](../../releases/latest)
-2. Extract all files into your Slay the Spire 2 `mods/` folder:
-   ```
-   mods/
-   └── Sts2Unlimited/
-       ├── Sts2Unlimited.dll
-       ├── 0Harmony.dll
-       ├── Sts2Unlimited.pck
-       ├── mod_manifest.json
-       ├── icon.svg
-       └── sts2unlimited.maxplayers.txt
-   ```
-3. Launch the game — the mod loads automatically
+**Steam Workshop (recommended):** Subscribe at [steamcommunity.com/sharedfiles/filedetails/?id=3747509118](https://steamcommunity.com/sharedfiles/filedetails/?id=3747509118) — the game loads it automatically.
+
+**Manual:** Download `Sts2Unlimited.zip` from the [latest release](../../releases/latest) and extract all files into your Slay the Spire 2 `mods/` folder:
+```
+mods/
+└── Sts2Unlimited/
+    ├── sts2unlimited.dll
+    ├── 0Harmony.dll
+    ├── sts2unlimited.pck
+    ├── Sts2Unlimited.json
+    ├── icon.svg
+    └── sts2unlimited.maxplayers.txt
+```
 
 ## Known Issues
 
@@ -80,7 +80,7 @@ Output is bundled to `release/` by the `BundleRelease` MSBuild target.
 Sts2Unlimited.cs            — Harmony patches, config loading, entry point
 SettingsMenuIntegration.cs  — Injects slider into the game's settings screen
 sts2unlimited.csproj        — Build config and BundleRelease target
-mod_manifest.json           — Mod metadata (name, version, author)
+Sts2Unlimited.json          — Mod metadata (name, version, author)
 export_presets.cfg          — Godot resource export config
 ```
 

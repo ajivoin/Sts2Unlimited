@@ -4,18 +4,20 @@ Play **Slay the Spire 2** multiplayer with any number of players instead of the 
 
 ## Installation
 
-1. Copy **all files** from this package into your Slay the Spire 2 `mods/` folder:
-   - **Steam (Windows)**: `C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2\mods\`
+**Steam Workshop (recommended):** Subscribe at [steamcommunity.com/sharedfiles/filedetails/?id=3747509118](https://steamcommunity.com/sharedfiles/filedetails/?id=3747509118) — the game loads it automatically.
 
-   Files to copy:
-   - `Sts2Unlimited.dll`
-   - `0Harmony.dll`
-   - `Sts2Unlimited.pck`
-   - `mod_manifest.json`
-   - `icon.svg`
-   - `sts2unlimited.maxplayers.txt`
+**Manual:** Copy **all files** from this package into your Slay the Spire 2 `mods/` folder:
+- **Steam (Windows)**: `C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2\mods\`
 
-2. Launch the game — the mod loads automatically
+Files to copy:
+- `sts2unlimited.dll`
+- `0Harmony.dll`
+- `sts2unlimited.pck`
+- `Sts2Unlimited.json`
+- `icon.svg`
+- `sts2unlimited.maxplayers.txt`
+
+Launch the game — the mod loads automatically.
 
 ## Configuration
 

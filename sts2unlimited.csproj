@@ -4,7 +4,7 @@
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ReleaseDir>$(MSBuildProjectDirectory)\release</ReleaseDir>
-    <AssemblyName>Sts2Unlimited</AssemblyName>
+    <AssemblyName>sts2unlimited</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="./sts2.dll"/>

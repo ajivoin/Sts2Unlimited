@@ -66,6 +66,11 @@ public static class PacketSizePatch
                 codes[i - 1] = new CodeInstruction(OpCodes.Call, _getRequiredBitsMethod);
                 patched++;
             }
+            else if (codes[i - 1].opcode == OpCodes.Ldc_I4_S && Convert.ToInt32(codes[i - 1].operand) == 3)
+            {
+                codes[i - 1] = new CodeInstruction(OpCodes.Call, _getRequiredBitsMethod);
+                patched++;
+            }
         }
 
         return codes;
@@ -99,7 +104,12 @@ public static class PacketSizePatch
             {
                 if (serialize != null) { harmony.Patch(serialize, transpiler: transpiler); patched = true; }
                 if (deserialize != null) { harmony.Patch(deserialize, transpiler: transpiler); patched = true; }
-                if (patched) patchedTypes++;
+                if (patched)
+                {
+                    patchedTypes++;
+                    Log.LogMessage(LogLevel.Debug, LogType.Generic,
+                        $"[PacketSizePatch] Patched {type.FullName ?? type.Name}");
+                }
             }
             catch (Exception e)
             {

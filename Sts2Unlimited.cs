@@ -77,11 +77,21 @@ public static class Sts2Unlimited
 				null
 			);
 
+			var netHostType = typeof(MegaCrit.Sts2.Core.Multiplayer.NetHostGameService);
+			var netHostMethodList = string.Join("; ", netHostType
+				.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
+				.Select(m => $"{m.Name}({string.Join(", ", m.GetParameters().Select(p => p.ParameterType.Name))})"));
+
 			if (steamHostMethod != null)
 			{
 				var steamPatch = typeof(Sts2Unlimited).GetMethod(nameof(Patch_StartSteamHost), BindingFlags.NonPublic | BindingFlags.Static);
 				harmony.Patch(steamHostMethod, prefix: new HarmonyMethod(steamPatch));
-				Log.LogMessage(LogLevel.Debug, LogType.Generic, "Patched StartSteamHost");
+				Log.LogMessage(LogLevel.Info, LogType.Generic, "[HostPatch] Patched StartSteamHost");
+			}
+			else
+			{
+				Log.LogMessage(LogLevel.Warn, LogType.Generic,
+					$"[HostPatch] StartSteamHost(int) NOT FOUND on NetHostGameService. Members: {netHostMethodList}");
 			}
 
 			// Patch StartENetHost to use custom player count
@@ -97,41 +107,12 @@ public static class Sts2Unlimited
 			{
 				var enetPatch = typeof(Sts2Unlimited).GetMethod(nameof(Patch_StartENetHost), BindingFlags.NonPublic | BindingFlags.Static);
 				harmony.Patch(enetHostMethod, prefix: new HarmonyMethod(enetPatch));
-				Log.LogMessage(LogLevel.Debug, LogType.Generic, "Patched StartENetHost");
+				Log.LogMessage(LogLevel.Info, LogType.Generic, "[HostPatch] Patched StartENetHost");
 			}
-
-			// Patch NCharacterSelectScreen.InitializeMultiplayerAsHost
-			var charSelectType = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect.NCharacterSelectScreen);
-			var charInitMethod = charSelectType.GetMethod(
-				"InitializeMultiplayerAsHost",
-				BindingFlags.Public | BindingFlags.Instance,
-				null,
-				[typeof(INetGameService), typeof(int)],
-				null
-			);
-
-			if (charInitMethod != null)
+			else
 			{
-				var charPatch = typeof(Sts2Unlimited).GetMethod(nameof(Patch_CharacterSelectInit), BindingFlags.NonPublic | BindingFlags.Static);
-				harmony.Patch(charInitMethod, prefix: new HarmonyMethod(charPatch));
-				Log.LogMessage(LogLevel.Debug, LogType.Generic, "Patched NCharacterSelectScreen.InitializeMultiplayerAsHost");
-			}
-
-			// Patch NCustomRunScreen.InitializeMultiplayerAsHost
-			var customRunType = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CustomRun.NCustomRunScreen);
-			var customInitMethod = customRunType.GetMethod(
-				"InitializeMultiplayerAsHost",
-				BindingFlags.Public | BindingFlags.Instance,
-				null,
-				[typeof(INetGameService), typeof(int)],
-				null
-			);
-
-			if (customInitMethod != null)
-			{
-				var customPatch = typeof(Sts2Unlimited).GetMethod(nameof(Patch_CustomRunInit), BindingFlags.NonPublic | BindingFlags.Static);
-				harmony.Patch(customInitMethod, prefix: new HarmonyMethod(customPatch));
-				Log.LogMessage(LogLevel.Debug, LogType.Generic, "Patched NCustomRunScreen.InitializeMultiplayerAsHost");
+				Log.LogMessage(LogLevel.Warn, LogType.Generic,
+					$"[HostPatch] StartENetHost(UInt16, int) NOT FOUND on NetHostGameService. Members: {netHostMethodList}");
 			}
 
 			// Patch NRestSiteRoom._Ready to handle >4 players at the campfire
@@ -271,25 +252,18 @@ public static class Sts2Unlimited
 
 	private static bool Patch_StartSteamHost(ref int maxClients)
 	{
+		Log.LogMessage(LogLevel.Info, LogType.Generic,
+			$"[HostPatch] StartSteamHost called with maxClients={maxClients}, overriding to {MaxPlayersOverride}");
 		maxClients = MaxPlayersOverride;
-		return true; // continue with patched method
+		return true;
 	}
 
 	private static bool Patch_StartENetHost(ushort port, ref int maxClients)
 	{
+		Log.LogMessage(LogLevel.Info, LogType.Generic,
+			$"[HostPatch] StartENetHost called with port={port} maxClients={maxClients}, overriding to {MaxPlayersOverride}");
 		maxClients = MaxPlayersOverride;
 		return true;
 	}
 
-	private static bool Patch_CharacterSelectInit(INetGameService gameService, ref int maxPlayers)
-	{
-		maxPlayers = MaxPlayersOverride;
-		return true;
-	}
-
-	private static bool Patch_CustomRunInit(INetGameService gameService, ref int maxPlayers)
-	{
-		maxPlayers = MaxPlayersOverride;
-		return true;
-	}
 }

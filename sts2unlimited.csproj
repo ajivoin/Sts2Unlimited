@@ -13,7 +13,7 @@
 
   <Target Name="BundleRelease" AfterTargets="Build">
     <ItemGroup>
-      <ReleaseFiles Include="$(OutDir)Sts2Unlimited.dll" />
+      <ReleaseFiles Include="$(OutDir)$(AssemblyName).dll" />
       <ReleaseFiles Include="$(OutDir)0Harmony.dll" />
       <ReleaseFiles Include="Sts2Unlimited.pck" />
       <ReleaseFiles Include="Sts2Unlimited.json" />
@@ -22,13 +22,13 @@
     </ItemGroup>
     <MakeDir Directories="$(ReleaseDir)" />
     <Copy SourceFiles="@(ReleaseFiles)" DestinationFolder="$(ReleaseDir)" SkipUnchangedFiles="true" />
-    <Copy SourceFiles="MOD_README.md" DestinationFiles="$(ReleaseDir)\README.md" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="MOD_README.md" DestinationFiles="$(ReleaseDir)/README.md" SkipUnchangedFiles="true" />
     <Message Text="✓ Bundled mod files to: $(ReleaseDir)" Importance="high" />
   </Target>
 
   <Target Name="DeployToGame" AfterTargets="BundleRelease" Condition="'$(STS2_MOD_DIR)' != ''">
     <ItemGroup>
-      <DeployFiles Include="$(OutDir)Sts2Unlimited.dll" />
+      <DeployFiles Include="$(OutDir)$(AssemblyName).dll" />
       <DeployFiles Include="$(OutDir)0Harmony.dll" />
       <DeployFiles Include="Sts2Unlimited.pck" />
       <DeployFiles Include="Sts2Unlimited.json" />

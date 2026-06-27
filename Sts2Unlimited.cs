@@ -24,6 +24,15 @@ public static class Sts2Unlimited
 
 	public static int MaxPlayersOverride { get => maxPlayersOverride; set => maxPlayersOverride = value; }
 
+	private static bool difficultyOverrideEnabled = false;
+	private static int  difficultyPlayersOverride  = 4;
+
+	public static bool DifficultyOverrideEnabled { get => difficultyOverrideEnabled; set => difficultyOverrideEnabled = value; }
+	public static int  DifficultyPlayersOverride  { get => difficultyPlayersOverride; set => difficultyPlayersOverride = value; }
+
+	public static int GetEffectivePlayerCount(int actualCount)
+	    => DifficultyOverrideEnabled ? DifficultyPlayersOverride : actualCount;
+
 	public static void ModLoaded()
 	{
 		LoadConfig();
@@ -45,10 +54,12 @@ public static class Sts2Unlimited
 				string json = File.ReadAllText(jsonPath);
 				var doc = JsonDocument.Parse(json);
 				if (doc.RootElement.TryGetProperty("MaxPlayers", out var val))
-				{
 					MaxPlayersOverride = val.GetInt32();
-					return;
-				}
+				if (doc.RootElement.TryGetProperty("DifficultyEnabled", out var de))
+					DifficultyOverrideEnabled = de.GetBoolean();
+				if (doc.RootElement.TryGetProperty("DifficultyPlayers", out var dp))
+					DifficultyPlayersOverride = Math.Clamp(dp.GetInt32(), 1, 16);
+				return;
 			}
 
 			// Fall back to legacy text file

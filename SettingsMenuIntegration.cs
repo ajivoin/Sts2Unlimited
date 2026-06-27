@@ -141,7 +141,7 @@ public static class SettingsMenuIntegration
         {
             int players = (int)Math.Round(v) + PLAYER_OFFSET;
             Sts2Unlimited.MaxPlayersOverride = players;
-            SaveMaxPlayers(players);
+            SaveSettings();
             slider.GetNodeOrNull("SliderValue")?.Set("text", $"{players}");
         }));
 
@@ -195,9 +195,15 @@ public static class SettingsMenuIntegration
         return null;
     }
 
-    public static void SaveMaxPlayers(int value)
+    public static void SaveSettings()
     {
-        try { File.WriteAllText(SettingsPath, $"{{\"MaxPlayers\":{value}}}"); }
+        try
+        {
+            string json = $"{{\"MaxPlayers\":{Sts2Unlimited.MaxPlayersOverride}," +
+                          $"\"DifficultyEnabled\":{(Sts2Unlimited.DifficultyOverrideEnabled ? "true" : "false")}," +
+                          $"\"DifficultyPlayers\":{Sts2Unlimited.DifficultyPlayersOverride}}}";
+            File.WriteAllText(SettingsPath, json);
+        }
         catch (Exception e) { GD.PrintErr($"[Sts2Unlimited] Failed to save settings: {e.Message}"); }
     }
 }

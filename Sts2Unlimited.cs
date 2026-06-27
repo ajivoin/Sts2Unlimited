@@ -252,6 +252,9 @@ public static class Sts2Unlimited
 				Log.LogMessage(LogLevel.Warn, LogType.Generic,
 					"[ChestPatch] NTreasureRoomRelicCollection.InitializeRelics not found — chest fix skipped");
 			}
+
+			// Patch difficulty scaling to support player-count override
+			DifficultyPatch.Apply(harmony);
 		}
 		catch (Exception e)
 		{

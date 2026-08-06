@@ -26,12 +26,18 @@ public static class Sts2Unlimited
 
 	private static bool difficultyOverrideEnabled = false;
 	private static int  difficultyPlayersOverride  = 4;
+	private static bool difficultyScaleSingleplayerEnabled = false;
 
 	public static bool DifficultyOverrideEnabled { get => difficultyOverrideEnabled; set => difficultyOverrideEnabled = value; }
 	public static int  DifficultyPlayersOverride  { get => difficultyPlayersOverride; set => difficultyPlayersOverride = value; }
+	public static bool DifficultyScaleSingleplayerEnabled { get => difficultyScaleSingleplayerEnabled; set => difficultyScaleSingleplayerEnabled = value; }
 
 	public static int GetEffectivePlayerCount(int actualCount)
-	    => DifficultyOverrideEnabled ? DifficultyPlayersOverride : actualCount;
+	{
+		if (!DifficultyOverrideEnabled) return actualCount;
+		if (actualCount == 1 && !DifficultyScaleSingleplayerEnabled) return actualCount;
+		return DifficultyPlayersOverride;
+	}
 
 	public static void ModLoaded()
 	{
@@ -59,6 +65,8 @@ public static class Sts2Unlimited
 					DifficultyOverrideEnabled = de.GetBoolean();
 				if (doc.RootElement.TryGetProperty("DifficultyPlayers", out var dp))
 					DifficultyPlayersOverride = Math.Clamp(dp.GetInt32(), 1, 16);
+				if (doc.RootElement.TryGetProperty("DifficultySingleplayer", out var dsp))
+					DifficultyScaleSingleplayerEnabled = dsp.GetBoolean();
 				return;
 			}
 

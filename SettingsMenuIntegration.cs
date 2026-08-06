@@ -264,7 +264,7 @@ public static class SettingsMenuIntegration
 
         LockRowIfRunInProgress(toggleRow, tickbox);
 
-        GD.Print("[Sts2Unlimited] Difficulty toggle configured.");
+        GD.Print($"[Sts2Unlimited] Difficulty toggle configured: enabled={Sts2Unlimited.DifficultyOverrideEnabled}.");
     }
 
     private static void ConfigureDifficultySlider(Node diffSliderRow, int currentDifficulty)
@@ -366,7 +366,7 @@ public static class SettingsMenuIntegration
 
         LockRowIfRunInProgress(spToggleRow, tickbox);
 
-        GD.Print("[Sts2Unlimited] Singleplayer scaling toggle configured.");
+        GD.Print($"[Sts2Unlimited] Singleplayer scaling toggle configured: enabled={Sts2Unlimited.DifficultyScaleSingleplayerEnabled}.");
     }
 
     // ── Lock settings while a run is active ─────────────────────────────────

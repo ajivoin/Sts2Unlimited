@@ -106,23 +106,50 @@ public static class DifficultyPatch
             return;
         }
 
-        var scaleHp = creatureType.GetMethod("ScaleHpForMultiplayer", BindingFlags.Public | BindingFlags.Static);
-        if (scaleHp == null)
-        {
-            Log.LogMessage(LogLevel.Warn, LogType.Generic, "[DifficultyPatch] Creature.ScaleHpForMultiplayer not found.");
-            return;
-        }
-
         var prefix = typeof(DifficultyPatch).GetMethod(
             nameof(Prefix_ScaleHpForMultiplayer), BindingFlags.NonPublic | BindingFlags.Static);
-        harmony.Patch(scaleHp, prefix: new HarmonyMethod(prefix));
-        Log.LogMessage(LogLevel.Info, LogType.Generic,
-            "[DifficultyPatch] Patched Creature.ScaleHpForMultiplayer (HP scaling — covers initial " +
-            "spawn plus all phase-transition/revive callers).");
+        var prefixMethod = new HarmonyMethod(prefix);
+
+        var scaleHp = creatureType.GetMethod("ScaleHpForMultiplayer", BindingFlags.Public | BindingFlags.Static);
+        if (scaleHp != null)
+        {
+            harmony.Patch(scaleHp, prefix: prefixMethod);
+            Log.LogMessage(LogLevel.Info, LogType.Generic,
+                "[DifficultyPatch] Patched Creature.ScaleHpForMultiplayer (HP scaling — covers " +
+                "phase-transition/revive callers that read Players.Count directly).");
+        }
+        else
+            Log.LogMessage(LogLevel.Warn, LogType.Generic, "[DifficultyPatch] Creature.ScaleHpForMultiplayer not found.");
+
+        // ScaleMonsterHpForMultiplayer (the instance wrapper CreateCreature actually calls) has
+        // its own early-return when playerCount == 1 — it never even calls the static helper
+        // above in that case. That's why the singleplayer-scaling toggle had no effect: with the
+        // raw actual count (1) going in, this wrapper bails out before our other prefix ever gets
+        // a chance to run. Same prefix works here too since the parameter is also named
+        // playerCount — rewriting it here, before the wrapper's own == 1 check, means an enabled
+        // override reaches that check as a non-1 value and the wrapper proceeds normally.
+        var scaleMonsterHp = creatureType.GetMethod("ScaleMonsterHpForMultiplayer", BindingFlags.Public | BindingFlags.Instance);
+        if (scaleMonsterHp != null)
+        {
+            harmony.Patch(scaleMonsterHp, prefix: prefixMethod);
+            Log.LogMessage(LogLevel.Info, LogType.Generic,
+                "[DifficultyPatch] Patched Creature.ScaleMonsterHpForMultiplayer (HP scaling — covers " +
+                "initial spawn via CombatState.CreateCreature, including the singleplayer case).");
+        }
+        else
+            Log.LogMessage(LogLevel.Warn, LogType.Generic, "[DifficultyPatch] Creature.ScaleMonsterHpForMultiplayer not found.");
     }
 
     private static void Prefix_ScaleHpForMultiplayer(ref int playerCount)
-        => playerCount = Sts2Unlimited.GetEffectivePlayerCount(playerCount);
+    {
+        int actual = playerCount;
+        playerCount = Sts2Unlimited.GetEffectivePlayerCount(playerCount);
+        Log.LogMessage(LogLevel.Debug, LogType.Generic,
+            $"[DifficultyPatch] ScaleHpForMultiplayer: actual={actual} -> effective={playerCount} " +
+            $"(OverrideEnabled={Sts2Unlimited.DifficultyOverrideEnabled}, " +
+            $"PlayersOverride={Sts2Unlimited.DifficultyPlayersOverride}, " +
+            $"ScaleSingleplayerEnabled={Sts2Unlimited.DifficultyScaleSingleplayerEnabled})");
+    }
 
     // As of the current game build, MultiplayerScalingModel.ModifyPowerAmountGiven no longer
     // exists — power scaling was refactored into PowerModel.GetScaledAmountForMultiplayer

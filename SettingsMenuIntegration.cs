@@ -19,19 +19,18 @@ namespace Sts2Unlimited;
 
 public static class SettingsMenuIntegration
 {
-    // Internal NSlider range. Actual players = internalValue + PLAYER_OFFSET.
+    // Displayed range for the Max Players slider. ConfigureSlider derives the underlying
+    // NSlider's internal [0, PLAYER_MAX-PLAYER_OFFSET] range from these at configure time.
     private const int PLAYER_MIN    = 2;
     private const int PLAYER_MAX    = 16;
     private const int PLAYER_OFFSET = PLAYER_MIN;                   // 2
-    private const int INTERNAL_MIN  = 0;
-    private const int INTERNAL_MAX  = PLAYER_MAX - PLAYER_OFFSET;   // 14
 
-    // Internal NSlider range for difficulty override. Actual value = internalValue + DIFFICULTY_OFFSET.
-    private const int DIFFICULTY_MIN    = 1;
-    private const int DIFFICULTY_MAX    = 16;
-    private const int DIFFICULTY_OFFSET = DIFFICULTY_MIN;                        // 1
-    private const int DIFF_INTERNAL_MIN = 0;
-    private const int DIFF_INTERNAL_MAX = DIFFICULTY_MAX - DIFFICULTY_OFFSET;   // 15
+    // Displayed range for the Difficulty Scaling slider. Exposed (internal, not private) so
+    // Sts2Unlimited.LoadConfig can clamp a loaded value to the same range instead of duplicating
+    // the bounds as separate literals.
+    internal const int DIFFICULTY_MIN    = 1;
+    internal const int DIFFICULTY_MAX    = 16;
+    private  const int DIFFICULTY_OFFSET = DIFFICULTY_MIN;          // 1
 
     private static string SettingsPath => Path.Combine(
         Path.GetDirectoryName(typeof(Sts2Unlimited).Assembly.Location) ?? ".",
@@ -106,6 +105,10 @@ public static class SettingsMenuIntegration
         if (__instance is not Node screen) return;
         try
         {
+            // Fresh screen instance means fresh duplicate rows below — anything registered from
+            // a previous open is guaranteed stale (its Node has already been discarded).
+            _ourTickboxInstances.Clear();
+
             var masterType = Type.GetType(
                 "MegaCrit.Sts2.Core.Nodes.Screens.Settings.NMasterVolumeSlider, sts2", false);
             if (masterType == null) { GD.PrintErr("[Sts2Unlimited] NMasterVolumeSlider not found."); return; }
@@ -129,7 +132,6 @@ public static class SettingsMenuIntegration
             // Duplicate the whole row (gets Label + styled NMasterVolumeSlider)
             Node sliderRow = (Node)templateRow.Duplicate(15);
             sliderRow.Name = "Sts2UnlimitedMaxPlayersRow";
-            Node slider = FindNodeByType(sliderRow, masterType);
 
             // Divider: clone %ModdingDivider (same tab, guaranteed same style)
             Node divider = (Node)moddingDivider.Duplicate();
@@ -149,7 +151,7 @@ public static class SettingsMenuIntegration
 
             tree.Connect(SceneTree.SignalName.ProcessFrame, Callable.From(() =>
             {
-                try { ConfigureMaxPlayersSlider(slider, sliderRow, Sts2Unlimited.MaxPlayersOverride); }
+                try { ConfigureMaxPlayersSlider(sliderRow, Sts2Unlimited.MaxPlayersOverride); }
                 catch (Exception e) { GD.PrintErr($"[Sts2Unlimited] Config error: {e.Message}\n{e.StackTrace}"); }
             }), (uint)GodotObject.ConnectFlags.OneShot);
 
@@ -207,7 +209,7 @@ public static class SettingsMenuIntegration
                 try
                 {
                     ConfigureDifficultyToggle(tickboxType, toggleRow, dependentRows);
-                    ConfigureDifficultySlider(slider, diffSliderRow, Sts2Unlimited.DifficultyPlayersOverride);
+                    ConfigureDifficultySlider(diffSliderRow, Sts2Unlimited.DifficultyPlayersOverride);
                     ConfigureSingleplayerToggle(tickboxType, spToggleRow);
                 }
                 catch (Exception e)
@@ -219,53 +221,9 @@ public static class SettingsMenuIntegration
         catch (Exception e) { GD.PrintErr($"[Sts2Unlimited] Injection error: {e.Message}\n{e.StackTrace}"); }
     }
 
-    private static void ConfigureMaxPlayersSlider(Node slider, Node sliderRow, int playerCount)
-    {
-        // ── 1. Name label — MegaRichTextLabel 'Label' inside the MarginContainer row ──
-        var nameLabel = sliderRow.GetNodeOrNull("Label");
-        if (nameLabel != null)
-            nameLabel.Set("text", "Max Players");
-        else
-            GD.PrintErr("[Sts2Unlimited] 'Label' not found in sliderRow.");
-
-        // ── 2. NSlider (Range) ───────────────────────────────────────────────
-        var nslider = slider?.GetNodeOrNull("Slider") as Godot.Range;
-        if (nslider == null) { GD.PrintErr("[Sts2Unlimited] 'Slider' child not found."); return; }
-
-        // Disconnect existing handlers:
-        //   NSettingsSlider.OnValueChanged  → formats label as "X%"
-        //   NMasterVolumeSlider.OnValueChanged → modifies master audio volume  ← must remove!
-        foreach (var conn in nslider.GetSignalConnectionList("value_changed"))
-            nslider.Disconnect("value_changed", conn["callable"].As<Callable>());
-
-        // NSlider.UpdateHandlePosition uses: _currentHandlePosition / MaxValue
-        // This assumes MinValue=0. To have value=2 appear at the leftmost position,
-        // use internal range [0, 14] and add PLAYER_OFFSET when reading/saving.
-        int internalValue = Math.Clamp(playerCount - PLAYER_OFFSET, INTERNAL_MIN, INTERNAL_MAX);
-
-        nslider.MinValue = INTERNAL_MIN;
-        nslider.MaxValue = INTERNAL_MAX;
-        nslider.Step     = 1;
-        nslider.Value    = internalValue;
-        // Snap the visual handle to the correct position immediately
-        nslider.Call("SetValueWithoutAnimation", (double)internalValue);
-
-        // Our handler: update MaxPlayersOverride and value display
-        nslider.Connect(Godot.Range.SignalName.ValueChanged, Callable.From<double>(v =>
-        {
-            int players = (int)Math.Round(v) + PLAYER_OFFSET;
-            Sts2Unlimited.MaxPlayersOverride = players;
-            SaveSettings();
-            slider.GetNodeOrNull("SliderValue")?.Set("text", $"{players}");
-        }));
-
-        // ── 3. Initial value display ─────────────────────────────────────────
-        slider.GetNodeOrNull("SliderValue")?.Set("text", $"{playerCount}");
-
-        LockRowIfRunInProgress(sliderRow, nslider);
-
-        GD.Print($"[Sts2Unlimited] Max Players slider configured: range [{PLAYER_MIN},{PLAYER_MAX}], current={playerCount}");
-    }
+    private static void ConfigureMaxPlayersSlider(Node sliderRow, int playerCount)
+        => ConfigureSlider(sliderRow, "Max Players", PLAYER_MIN, PLAYER_MAX, PLAYER_OFFSET, playerCount,
+            value => { Sts2Unlimited.MaxPlayersOverride = value; SaveSettings(); });
 
     private static void ConfigureDifficultyToggle(Type tickboxType, Node toggleRow, Node[] dependentRows)
     {
@@ -290,7 +248,7 @@ public static class SettingsMenuIntegration
         if (tickbox is GodotObject go) _ourTickboxInstances.Add(go);
 
         // Disconnect any existing Toggled handlers from the duplicate
-        DisconnectExistingToggledHandlers(tickbox);
+        DisconnectExistingHandlers(tickbox, "Toggled");
 
         // Reflect initial ticked state
         tickbox.Set("IsTicked", Sts2Unlimited.DifficultyOverrideEnabled);
@@ -309,58 +267,68 @@ public static class SettingsMenuIntegration
         GD.Print("[Sts2Unlimited] Difficulty toggle configured.");
     }
 
-    private static void ConfigureDifficultySlider(Node sliderTemplate, Node diffSliderRow, int currentDifficulty)
-    {
-        // Set the row label
-        var nameLabel = diffSliderRow.GetNodeOrNull("Label");
-        if (nameLabel != null)
-            nameLabel.Set("text", "Difficulty Scaling");
-        else
-            GD.PrintErr("[Sts2Unlimited] 'Label' not found in diffSliderRow.");
+    private static void ConfigureDifficultySlider(Node diffSliderRow, int currentDifficulty)
+        => ConfigureSlider(diffSliderRow, "Difficulty Scaling", DIFFICULTY_MIN, DIFFICULTY_MAX, DIFFICULTY_OFFSET, currentDifficulty,
+            value => { Sts2Unlimited.DifficultyPlayersOverride = value; SaveSettings(); });
 
-        // Find the NMasterVolumeSlider and then its inner NSlider Range
+    // Shared by the Max Players and Difficulty Scaling rows — both duplicate an NMasterVolumeSlider
+    // template and only differ in label text, value range/offset, and what the chosen value gets
+    // written to. min/max/offset define the *displayed* range; the underlying NSlider always uses
+    // an internal [0, max-offset] range (NSlider.UpdateHandlePosition assumes MinValue=0), so the
+    // offset gets added back when reading a value out and subtracted when setting one in.
+    private static void ConfigureSlider(Node row, string label, int min, int max, int offset,
+        int currentValue, Action<int> onValueChanged)
+    {
+        var nameLabel = row.GetNodeOrNull("Label");
+        if (nameLabel != null)
+            nameLabel.Set("text", label);
+        else
+            GD.PrintErr($"[Sts2Unlimited] 'Label' not found in row for '{label}'.");
+
         var masterType = Type.GetType(
             "MegaCrit.Sts2.Core.Nodes.Screens.Settings.NMasterVolumeSlider, sts2", false);
-        Node diffSlider = FindNodeByType(diffSliderRow, masterType);
-        if (diffSlider == null)
+        Node sliderControl = FindNodeByType(row, masterType);
+        if (sliderControl == null)
         {
-            GD.PrintErr("[Sts2Unlimited] NMasterVolumeSlider not found in diffSliderRow.");
+            GD.PrintErr($"[Sts2Unlimited] NMasterVolumeSlider not found in row for '{label}'.");
             return;
         }
 
-        var nslider = diffSlider?.GetNodeOrNull("Slider") as Godot.Range;
+        var nslider = sliderControl.GetNodeOrNull("Slider") as Godot.Range;
         if (nslider == null)
         {
-            GD.PrintErr("[Sts2Unlimited] 'Slider' child not found in difficulty slider.");
+            GD.PrintErr($"[Sts2Unlimited] 'Slider' child not found for '{label}'.");
             return;
         }
 
-        // Disconnect existing handlers (carries over from NMasterVolumeSlider template)
-        foreach (var conn in nslider.GetSignalConnectionList("value_changed"))
-            nslider.Disconnect("value_changed", conn["callable"].As<Callable>());
+        // Disconnect existing handlers carried over from the template (e.g. NMasterVolumeSlider's
+        // own OnValueChanged, which would otherwise modify master audio volume).
+        DisconnectExistingHandlers(nslider, "value_changed");
 
-        int internalValue = Math.Clamp(currentDifficulty - DIFFICULTY_OFFSET, DIFF_INTERNAL_MIN, DIFF_INTERNAL_MAX);
+        int internalMin = 0;
+        int internalMax = max - offset;
+        int internalValue = Math.Clamp(currentValue - offset, internalMin, internalMax);
 
-        nslider.MinValue = DIFF_INTERNAL_MIN;
-        nslider.MaxValue = DIFF_INTERNAL_MAX;
+        nslider.MinValue = internalMin;
+        nslider.MaxValue = internalMax;
         nslider.Step     = 1;
         nslider.Value    = internalValue;
+        // Snap the visual handle to the correct position immediately
         nslider.Call("SetValueWithoutAnimation", (double)internalValue);
 
         nslider.Connect(Godot.Range.SignalName.ValueChanged, Callable.From<double>(v =>
         {
-            int difficulty = (int)Math.Round(v) + DIFFICULTY_OFFSET;
-            Sts2Unlimited.DifficultyPlayersOverride = difficulty;
-            SaveSettings();
-            diffSlider.GetNodeOrNull("SliderValue")?.Set("text", $"{difficulty}");
+            int value = (int)Math.Round(v) + offset;
+            onValueChanged(value);
+            sliderControl.GetNodeOrNull("SliderValue")?.Set("text", $"{value}");
         }));
 
         // Initial value display
-        diffSlider.GetNodeOrNull("SliderValue")?.Set("text", $"{currentDifficulty}");
+        sliderControl.GetNodeOrNull("SliderValue")?.Set("text", $"{currentValue}");
 
-        LockRowIfRunInProgress(diffSliderRow, nslider);
+        LockRowIfRunInProgress(row, nslider);
 
-        GD.Print($"[Sts2Unlimited] Difficulty slider configured: range [{DIFFICULTY_MIN},{DIFFICULTY_MAX}], current={currentDifficulty}");
+        GD.Print($"[Sts2Unlimited] {label} slider configured: range [{min},{max}], current={currentValue}");
     }
 
     // Sub-toggle of the main difficulty override: by default the override only applies once
@@ -385,7 +353,7 @@ public static class SettingsMenuIntegration
 
         if (tickbox is GodotObject go) _ourTickboxInstances.Add(go);
 
-        DisconnectExistingToggledHandlers(tickbox);
+        DisconnectExistingHandlers(tickbox, "Toggled");
 
         tickbox.Set("IsTicked", Sts2Unlimited.DifficultyScaleSingleplayerEnabled);
 
@@ -447,18 +415,18 @@ public static class SettingsMenuIntegration
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    // Strips any Toggled listeners carried over onto the duplicate by Duplicate(15)'s
-    // DUPLICATE_SIGNALS flag (e.g. the real tickbox's own listener, whose target isn't part of
-    // the duplicated subtree and doesn't get cleanly remapped). GetSignalConnectionList can
-    // return entries that Disconnect no longer considers live by the time we get to them —
-    // guard with IsConnected so that shows up as a silent skip instead of a Godot engine ERROR.
-    private static void DisconnectExistingToggledHandlers(Node tickbox)
+    // Strips any listeners carried over onto a duplicate by Duplicate(15)'s DUPLICATE_SIGNALS
+    // flag (e.g. the real tickbox's/slider's own listener, whose target isn't part of the
+    // duplicated subtree and doesn't get cleanly remapped). GetSignalConnectionList can return
+    // entries that Disconnect no longer considers live by the time we get to them — guard with
+    // IsConnected so that shows up as a silent skip instead of a Godot engine ERROR.
+    private static void DisconnectExistingHandlers(GodotObject node, string signal)
     {
-        foreach (var conn in tickbox.GetSignalConnectionList("Toggled"))
+        foreach (var conn in node.GetSignalConnectionList(signal))
         {
             var callable = conn["callable"].As<Callable>();
-            if (tickbox.IsConnected("Toggled", callable))
-                tickbox.Disconnect("Toggled", callable);
+            if (node.IsConnected(signal, callable))
+                node.Disconnect(signal, callable);
         }
     }
 

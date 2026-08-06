@@ -55,25 +55,35 @@ public static class Sts2Unlimited
 
 			// Try JSON settings first
 			string jsonPath = Path.Combine(dllDir, "sts2unlimited.settings.json");
+			bool maxPlayersLoadedFromJson = false;
 			if (File.Exists(jsonPath))
 			{
 				string json = File.ReadAllText(jsonPath);
 				var doc = JsonDocument.Parse(json);
 				if (doc.RootElement.TryGetProperty("MaxPlayers", out var val))
+				{
 					MaxPlayersOverride = val.GetInt32();
+					maxPlayersLoadedFromJson = true;
+				}
 				if (doc.RootElement.TryGetProperty("DifficultyEnabled", out var de))
 					DifficultyOverrideEnabled = de.GetBoolean();
 				if (doc.RootElement.TryGetProperty("DifficultyPlayers", out var dp))
-					DifficultyPlayersOverride = Math.Clamp(dp.GetInt32(), 1, 16);
+					DifficultyPlayersOverride = Math.Clamp(dp.GetInt32(),
+						SettingsMenuIntegration.DIFFICULTY_MIN, SettingsMenuIntegration.DIFFICULTY_MAX);
 				if (doc.RootElement.TryGetProperty("DifficultySingleplayer", out var dsp))
 					DifficultyScaleSingleplayerEnabled = dsp.GetBoolean();
-				return;
 			}
 
-			// Fall back to legacy text file
-			string txtPath = Path.Combine(dllDir, "sts2unlimited.maxplayers.txt");
-			if (File.Exists(txtPath) && int.TryParse(File.ReadAllText(txtPath).Trim(), out var n) && n > 0)
-				MaxPlayersOverride = n;
+			// Fall back to legacy text file — only ever stored MaxPlayers (predates the JSON
+			// format and the difficulty fields), so this fallback only applies to that one value.
+			// Runs whenever MaxPlayers wasn't loaded from JSON, whether because settings.json
+			// doesn't exist at all or because it exists but is missing/malformed that key.
+			if (!maxPlayersLoadedFromJson)
+			{
+				string txtPath = Path.Combine(dllDir, "sts2unlimited.maxplayers.txt");
+				if (File.Exists(txtPath) && int.TryParse(File.ReadAllText(txtPath).Trim(), out var n) && n > 0)
+					MaxPlayersOverride = n;
+			}
 		}
 		catch (Exception e)
 		{

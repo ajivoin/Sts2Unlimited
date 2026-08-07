@@ -24,6 +24,21 @@ public static class Sts2Unlimited
 
 	public static int MaxPlayersOverride { get => maxPlayersOverride; set => maxPlayersOverride = value; }
 
+	private static bool difficultyOverrideEnabled = false;
+	private static int  difficultyPlayersOverride  = 4;
+	private static bool difficultyScaleSingleplayerEnabled = false;
+
+	public static bool DifficultyOverrideEnabled { get => difficultyOverrideEnabled; set => difficultyOverrideEnabled = value; }
+	public static int  DifficultyPlayersOverride  { get => difficultyPlayersOverride; set => difficultyPlayersOverride = value; }
+	public static bool DifficultyScaleSingleplayerEnabled { get => difficultyScaleSingleplayerEnabled; set => difficultyScaleSingleplayerEnabled = value; }
+
+	public static int GetEffectivePlayerCount(int actualCount)
+	{
+		if (!DifficultyOverrideEnabled) return actualCount;
+		if (actualCount == 1 && !DifficultyScaleSingleplayerEnabled) return actualCount;
+		return DifficultyPlayersOverride;
+	}
+
 	public static void ModLoaded()
 	{
 		LoadConfig();
@@ -40,6 +55,7 @@ public static class Sts2Unlimited
 
 			// Try JSON settings first
 			string jsonPath = Path.Combine(dllDir, "sts2unlimited.settings.json");
+			bool maxPlayersLoadedFromJson = false;
 			if (File.Exists(jsonPath))
 			{
 				string json = File.ReadAllText(jsonPath);
@@ -47,14 +63,27 @@ public static class Sts2Unlimited
 				if (doc.RootElement.TryGetProperty("MaxPlayers", out var val))
 				{
 					MaxPlayersOverride = val.GetInt32();
-					return;
+					maxPlayersLoadedFromJson = true;
 				}
+				if (doc.RootElement.TryGetProperty("DifficultyEnabled", out var de))
+					DifficultyOverrideEnabled = de.GetBoolean();
+				if (doc.RootElement.TryGetProperty("DifficultyPlayers", out var dp))
+					DifficultyPlayersOverride = Math.Clamp(dp.GetInt32(),
+						SettingsMenuIntegration.DIFFICULTY_MIN, SettingsMenuIntegration.DIFFICULTY_MAX);
+				if (doc.RootElement.TryGetProperty("DifficultySingleplayer", out var dsp))
+					DifficultyScaleSingleplayerEnabled = dsp.GetBoolean();
 			}
 
-			// Fall back to legacy text file
-			string txtPath = Path.Combine(dllDir, "sts2unlimited.maxplayers.txt");
-			if (File.Exists(txtPath) && int.TryParse(File.ReadAllText(txtPath).Trim(), out var n) && n > 0)
-				MaxPlayersOverride = n;
+			// Fall back to legacy text file — only ever stored MaxPlayers (predates the JSON
+			// format and the difficulty fields), so this fallback only applies to that one value.
+			// Runs whenever MaxPlayers wasn't loaded from JSON, whether because settings.json
+			// doesn't exist at all or because it exists but is missing/malformed that key.
+			if (!maxPlayersLoadedFromJson)
+			{
+				string txtPath = Path.Combine(dllDir, "sts2unlimited.maxplayers.txt");
+				if (File.Exists(txtPath) && int.TryParse(File.ReadAllText(txtPath).Trim(), out var n) && n > 0)
+					MaxPlayersOverride = n;
+			}
 		}
 		catch (Exception e)
 		{
@@ -241,6 +270,9 @@ public static class Sts2Unlimited
 				Log.LogMessage(LogLevel.Warn, LogType.Generic,
 					"[ChestPatch] NTreasureRoomRelicCollection.InitializeRelics not found — chest fix skipped");
 			}
+
+			// Patch difficulty scaling to support player-count override
+			DifficultyPatch.Apply(harmony);
 		}
 		catch (Exception e)
 		{

@@ -3,7 +3,7 @@
   "name": "Unlimited: No Player Limit",
   "author": "Andrew",
   "description": "Play Slay the Spire 2 with any number of players.",
-  "version": "v0.6.0",
+  "version": "v0.6.1",
   "has_pck": true,
   "has_dll": true,
   "dependencies": [],

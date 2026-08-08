@@ -144,6 +144,59 @@ public static class Sts2Unlimited
 					$"[HostPatch] StartENetHost(UInt16, int) NOT FOUND on NetHostGameService. Members: {netHostMethodList}");
 			}
 
+			// Patch NCharacterSelectScreen.InitializeMultiplayerAsHost — this is what actually
+			// governs how many players StartRunLobby will seat (see TryAddPlayerInFirstAvailableSlot,
+			// which loops slot indices only up to MaxPlayers). StartSteamHost/StartENetHost's
+			// maxClients only controls the transport-level accept limit (Steam lobby member count /
+			// ENet socket cap); leaving this one at vanilla's hardcoded 4 meant the 5th+ player could
+			// connect at the network level but still get refused a run slot. Previously removed in
+			// b215ae7 on a since-unconfirmed theory that it caused a partial-lobby black screen —
+			// IsAboutToBeginGame/BeginRunForAllPlayersIfAllReady only wait on the players actually
+			// present in StartRunLobby.Players, not on MaxPlayers, so that shouldn't reproduce here.
+			var charSelectType = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect.NCharacterSelectScreen);
+			var charInitMethod = charSelectType.GetMethod(
+				"InitializeMultiplayerAsHost",
+				BindingFlags.Public | BindingFlags.Instance,
+				null,
+				[typeof(INetGameService), typeof(int)],
+				null
+			);
+
+			if (charInitMethod != null)
+			{
+				var charPatch = typeof(Sts2Unlimited).GetMethod(nameof(Patch_LobbyInitMaxPlayers), BindingFlags.NonPublic | BindingFlags.Static);
+				harmony.Patch(charInitMethod, prefix: new HarmonyMethod(charPatch));
+				Log.LogMessage(LogLevel.Info, LogType.Generic, "[HostPatch] Patched NCharacterSelectScreen.InitializeMultiplayerAsHost");
+			}
+			else
+			{
+				Log.LogMessage(LogLevel.Warn, LogType.Generic,
+					"[HostPatch] NCharacterSelectScreen.InitializeMultiplayerAsHost(INetGameService, int) NOT FOUND.");
+			}
+
+			// Patch NCustomRunScreen.InitializeMultiplayerAsHost — same reasoning as above, for the
+			// Custom Run host flow.
+			var customRunType = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CustomRun.NCustomRunScreen);
+			var customInitMethod = customRunType.GetMethod(
+				"InitializeMultiplayerAsHost",
+				BindingFlags.Public | BindingFlags.Instance,
+				null,
+				[typeof(INetGameService), typeof(int)],
+				null
+			);
+
+			if (customInitMethod != null)
+			{
+				var customPatch = typeof(Sts2Unlimited).GetMethod(nameof(Patch_LobbyInitMaxPlayers), BindingFlags.NonPublic | BindingFlags.Static);
+				harmony.Patch(customInitMethod, prefix: new HarmonyMethod(customPatch));
+				Log.LogMessage(LogLevel.Info, LogType.Generic, "[HostPatch] Patched NCustomRunScreen.InitializeMultiplayerAsHost");
+			}
+			else
+			{
+				Log.LogMessage(LogLevel.Warn, LogType.Generic,
+					"[HostPatch] NCustomRunScreen.InitializeMultiplayerAsHost(INetGameService, int) NOT FOUND.");
+			}
+
 			// Patch NRestSiteRoom._Ready to handle >4 players at the campfire
 			var restSiteRoomType = typeof(MegaCrit.Sts2.Core.Nodes.Rooms.NRestSiteRoom);
 			var restSiteReadyMethod = restSiteRoomType.GetMethod(
@@ -295,6 +348,18 @@ public static class Sts2Unlimited
 		Log.LogMessage(LogLevel.Info, LogType.Generic,
 			$"[HostPatch] StartENetHost called with port={port} maxClients={maxClients}, overriding to {MaxPlayersOverride}");
 		maxClients = MaxPlayersOverride;
+		return true;
+	}
+
+	// Shared by NCharacterSelectScreen and NCustomRunScreen's InitializeMultiplayerAsHost — both
+	// have the same (INetGameService gameService, int maxPlayers) signature, matched by parameter
+	// name regardless of declaring type (see DifficultyPatch's Prefix_ScaleHpForMultiplayer for the
+	// same pattern).
+	private static bool Patch_LobbyInitMaxPlayers(ref int maxPlayers)
+	{
+		Log.LogMessage(LogLevel.Info, LogType.Generic,
+			$"[HostPatch] InitializeMultiplayerAsHost called with maxPlayers={maxPlayers}, overriding to {MaxPlayersOverride}");
+		maxPlayers = MaxPlayersOverride;
 		return true;
 	}
 

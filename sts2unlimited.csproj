@@ -11,6 +11,12 @@
     <PackageReference Include="Lib.Harmony" Version="2.4.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- tests/ is a standalone headless harness with its own entry point;
+         Godot.NET.Sdk's default **/*.cs glob would otherwise compile it into the mod. -->
+    <Compile Remove="tests/**/*.cs" />
+  </ItemGroup>
+
   <Target Name="BundleRelease" AfterTargets="Build">
     <ItemGroup>
       <ReleaseFiles Include="$(OutDir)$(AssemblyName).dll" />

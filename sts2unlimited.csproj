@@ -8,13 +8,21 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="./sts2.dll"/>
-    <PackageReference Include="Lib.Harmony" Version="2.3.3" />
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- tests/ is a standalone headless harness with its own entry point;
+         Godot.NET.Sdk's default **/*.cs glob would otherwise compile it into the mod. -->
+    <Compile Remove="tests/**/*.cs" />
   </ItemGroup>
 
   <Target Name="BundleRelease" AfterTargets="Build">
     <ItemGroup>
+      <!-- 0Harmony.dll is deliberately not bundled: the game ships its own copy in
+           data_sts2_windows_x86_64/ and that is what resolves at runtime. Verified by
+           removing ours from a live install — every patch still applied. -->
       <ReleaseFiles Include="$(OutDir)$(AssemblyName).dll" />
-      <ReleaseFiles Include="$(OutDir)0Harmony.dll" />
       <ReleaseFiles Include="Sts2Unlimited.pck" />
       <ReleaseFiles Include="Sts2Unlimited.json" />
       <ReleaseFiles Include="icon.svg" />
@@ -29,7 +37,6 @@
   <Target Name="DeployToGame" AfterTargets="BundleRelease" Condition="'$(STS2_MOD_DIR)' != ''">
     <ItemGroup>
       <DeployFiles Include="$(OutDir)$(AssemblyName).dll" />
-      <DeployFiles Include="$(OutDir)0Harmony.dll" />
       <DeployFiles Include="Sts2Unlimited.pck" />
       <DeployFiles Include="Sts2Unlimited.json" />
     </ItemGroup>

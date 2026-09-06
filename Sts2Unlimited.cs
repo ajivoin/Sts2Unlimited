@@ -293,6 +293,13 @@ public static class Sts2Unlimited
 			// Patch packet list serialization to support more than 7 items (3-bit limit)
 			PacketSizePatch.Apply(harmony);
 
+			// Guard the same headers at PacketWriter.WriteList / PacketReader.ReadList. Another
+			// mod (STS2-RitsuLib) patches NetMessageBus.SerializeMessage<LobbyBeginRunMessage>
+			// before we load, which makes the JIT inline the unpatched Serialize into its
+			// replacement — a copy the transpiler above can never reach. Must run after
+			// PacketSizePatch.Apply, which is what populates RewrittenListElementTypes.
+			ListHeaderWidthPatch.Apply(harmony);
+
 			// Build reflection cache for chest patch
 			ChestPatch.RegisterReflectionCache();
 

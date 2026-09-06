@@ -13,8 +13,13 @@ obj/
 SYSTEM_OVERVIEW.md
 *.cs.uid
 
-# Game DLL reference (large binary, not source)
+# Game DLL references (large binaries, not source). Copy from the game install:
+#   <steam>/steamapps/common/Slay the Spire 2/data_sts2_windows_x86_64/
+# Sentry.* are only needed by tests/PatchTests — sts2.dll has a module initializer
+# that runs SentryAutoInit on first type access, so loading it headless needs them.
 sts2.dll
+Sentry.Godot.dll
+Sentry.dll
 *.tmp
 
 # User settings (contain local player counts — regenerated at runtime)

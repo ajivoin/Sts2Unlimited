@@ -41,6 +41,26 @@ public static class PacketSizePatch
         typeof(PacketSizePatch).GetMethod(nameof(GetRequiredBits),
             BindingFlags.Public | BindingFlags.Static)!;
 
+    /// <summary>
+    /// Vanilla's hardcoded player-list header width. The only constant this transpiler
+    /// rewrites, and the sentinel <see cref="ListHeaderWidthPatch"/> looks for at the leaf.
+    /// </summary>
+    public const int VanillaListBits = 3;
+
+    private static readonly HashSet<Type> _rewrittenListElementTypes = new();
+
+    /// <summary>
+    /// The T of every WriteList&lt;T&gt;/ReadList&lt;T&gt; call whose vanilla 3-bit header this
+    /// transpiler rewrote. Populated during <see cref="Apply"/>; read afterwards by
+    /// <see cref="ListHeaderWidthPatch"/> to decide which generic instantiations need a leaf
+    /// guard. Collected rather than hardcoded because the game renames this type between
+    /// builds — it was LobbyPlayer, it is now StartRunLobbyPlayer.
+    /// </summary>
+    public static IReadOnlyCollection<Type> RewrittenListElementTypes => _rewrittenListElementTypes;
+
+    /// <summary>Test seam: lets a test assert on one method's IL in isolation.</summary>
+    internal static void ResetRewrittenListElementTypes() => _rewrittenListElementTypes.Clear();
+
     public static IEnumerable<CodeInstruction> Transpile_SerializeDeserialize(
         IEnumerable<CodeInstruction> instructions)
     {
@@ -61,19 +81,27 @@ public static class PacketSizePatch
 
             // The instruction immediately before is the lengthBits argument.
             // Only replace the constant 3 — other bit widths are intentional.
-            if (codes[i - 1].opcode == OpCodes.Ldc_I4_3)
-            {
-                codes[i - 1] = new CodeInstruction(OpCodes.Call, _getRequiredBitsMethod);
-                patched++;
-            }
-            else if (codes[i - 1].opcode == OpCodes.Ldc_I4_S && Convert.ToInt32(codes[i - 1].operand) == 3)
-            {
-                codes[i - 1] = new CodeInstruction(OpCodes.Call, _getRequiredBitsMethod);
-                patched++;
-            }
+            if (!IsVanillaListBitsConstant(codes[i - 1]))
+                continue;
+
+            codes[i - 1] = new CodeInstruction(OpCodes.Call, _getRequiredBitsMethod);
+            patched++;
+
+            // Record which list this was, so the leaf guard can cover the same instantiation.
+            if (mi.IsGenericMethod)
+                _rewrittenListElementTypes.Add(mi.GetGenericArguments()[0]);
         }
 
         return codes;
+    }
+
+    // The compiler may emit the constant 3 as ldc.i4.3, ldc.i4.s 3, or ldc.i4 3.
+    private static bool IsVanillaListBitsConstant(CodeInstruction code)
+    {
+        if (code.opcode == OpCodes.Ldc_I4_3) return true;
+        if (code.opcode == OpCodes.Ldc_I4_S || code.opcode == OpCodes.Ldc_I4)
+            return code.operand != null && Convert.ToInt32(code.operand) == VanillaListBits;
+        return false;
     }
 
     public static void Apply(Harmony harmony)

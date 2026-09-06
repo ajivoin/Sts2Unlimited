@@ -11,7 +11,6 @@ Play **Slay the Spire 2** multiplayer with any number of players instead of the 
 
 Files to copy:
 - `sts2unlimited.dll`
-- `0Harmony.dll`
 - `sts2unlimited.pck`
 - `Sts2Unlimited.json`
 - `icon.svg`
@@ -34,7 +33,7 @@ The default is **8 players**.
 - Make sure `sts2unlimited.maxplayers.txt` is in the same folder as the DLLs and contains only a number
 
 **Game crashes on startup**
-- Verify all files are present in the mods folder — `0Harmony.dll` is required
+- Verify all files are present in the mods folder
 - Check that the files are in the correct `mods/` directory
 
 **Slider not visible in Settings**

@@ -69,6 +69,10 @@ later transpile can no longer reach — the same header width is also enforced a
 guard, a host running both mods writes a 3-bit header while clients read a 5-bit one and
 no client can join.
 
+Because the desync happens at write time, the **host** in particular needs this update
+to fix the RitsuLib case — a host still running an older Sts2Unlimited writes the 3-bit
+header regardless of which version any client has installed.
+
 Settings are persisted to `sts2unlimited.settings.json` via the game's own settings API, with fallback to the legacy text file.
 
 ## Limitations

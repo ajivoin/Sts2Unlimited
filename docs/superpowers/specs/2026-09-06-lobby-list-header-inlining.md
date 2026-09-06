@@ -162,6 +162,12 @@ the setting is. An already-transpiled call site passes 5 and is left untouched.
 - A mod loaded *after* our initializer that introduces a new message with a 3-bit
   list header gets neither the transpile nor the leaf guard. Nothing can be done
   about that from here.
+- The leaf guard is scoped by element type, not by call site: it rewrites every
+  vanilla-width `WriteList`/`ReadList` call for `StartRunLobbyPlayer`, not only the
+  lobby handshake's. Exhaustively ruled out as a problem on the current build — all
+  four vanilla-width call sites carry that same type — but a future build that reused
+  the recorded element type for an unrelated list wanting a genuine 3-bit header would
+  have that list widened too.
 - The fix does not depend on RitsuLib being present, and does nothing when it is not.
 
 ## Verification environment

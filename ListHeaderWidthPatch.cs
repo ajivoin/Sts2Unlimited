@@ -21,6 +21,15 @@ namespace Sts2Unlimited;
 /// even in the failing case — so guarding those leaves catches the inlined copy and the
 /// transpiled one alike. The prefix rewrites only the vanilla constant 3, the same value the
 /// transpiler targets, and takes the width from GetRequiredBits() so both paths stay in step.
+///
+/// This is safe from cross-contaminating unrelated lists only because the recorded element type
+/// (currently StartRunLobbyPlayer) is a value type: value-type generic instantiations get their
+/// own JIT'd code, so patching WriteList/ReadList for that one T cannot affect any other T.
+/// Reference-type instantiations share code (__Canon) under Harmony's generic patching, so if a
+/// future game build made the recorded element type (or any newly recorded one) a class, patching
+/// it here could silently rewrite the wire format for unrelated reference-typed lists too.
+/// TryPatch warns through LogSink when this landmine is hit, but still patches — see Important
+/// finding 1 in the final review for the full reasoning.
 /// </summary>
 public static class ListHeaderWidthPatch
 {
@@ -74,31 +83,48 @@ public static class ListHeaderWidthPatch
     /// </summary>
     public static void Apply(Harmony harmony)
     {
-        var writePrefix = new HarmonyMethod(typeof(ListHeaderWidthPatch).GetMethod(
-            nameof(Prefix_WriteList), BindingFlags.Public | BindingFlags.Static)!);
-        var readPrefix = new HarmonyMethod(typeof(ListHeaderWidthPatch).GetMethod(
-            nameof(Prefix_ReadList), BindingFlags.Public | BindingFlags.Static)!);
-
-        int patched = 0;
-        foreach (var elementType in PacketSizePatch.RewrittenListElementTypes)
+        try
         {
-            if (TryPatch(harmony, typeof(PacketWriter), "WriteList", elementType, writePrefix)) patched++;
-            if (TryPatch(harmony, typeof(PacketReader), "ReadList", elementType, readPrefix)) patched++;
-        }
+            var writePrefix = new HarmonyMethod(typeof(ListHeaderWidthPatch).GetMethod(
+                nameof(Prefix_WriteList), BindingFlags.Public | BindingFlags.Static)!);
+            var readPrefix = new HarmonyMethod(typeof(ListHeaderWidthPatch).GetMethod(
+                nameof(Prefix_ReadList), BindingFlags.Public | BindingFlags.Static)!);
 
-        if (patched == 0)
-            LogSink(LogLevel.Warn,
-                "[ListHeaderWidthPatch] No vanilla-width list call sites were found — the inlining guard is inactive. " +
-                "Joining may fail if another mod patches a lobby message's SerializeMessage.");
-        else
-            LogSink(LogLevel.Info,
-                $"[ListHeaderWidthPatch] Guarded {patched} list methods at WireBits={PacketSizePatch.GetRequiredBits()}");
+            int patched = 0;
+            foreach (var elementType in PacketSizePatch.RewrittenListElementTypes)
+            {
+                if (TryPatch(harmony, typeof(PacketWriter), "WriteList", elementType, writePrefix)) patched++;
+                if (TryPatch(harmony, typeof(PacketReader), "ReadList", elementType, readPrefix)) patched++;
+            }
+
+            if (patched == 0)
+                LogSink(LogLevel.Warn,
+                    "[ListHeaderWidthPatch] No vanilla-width list call sites were found — the inlining guard is inactive. " +
+                    "Joining may fail if another mod patches a lobby message's SerializeMessage.");
+            else
+                LogSink(LogLevel.Info,
+                    $"[ListHeaderWidthPatch] Guarded {patched} list methods at WireBits={PacketSizePatch.GetRequiredBits()}");
+        }
+        catch (Exception e)
+        {
+            LogSink(LogLevel.Warn, $"[ListHeaderWidthPatch] Apply failed — inlining guard is inactive: {e.Message}");
+        }
     }
 
     private static bool TryPatch(Harmony harmony, Type declaringType, string methodName, Type elementType, HarmonyMethod prefix)
     {
         try
         {
+            // Value-type generic instantiations get their own JIT'd code, so patching this T is
+            // precisely scoped. Reference types share code (__Canon) under Harmony's generic
+            // patching, so patching one closed reference-type instantiation could silently affect
+            // every reference-type WriteList/ReadList call in the assembly. Warn, but patch anyway
+            // — refusing would disable the fix outright on such a build, which is worse.
+            if (!elementType.IsValueType)
+                LogSink(LogLevel.Warn,
+                    $"[ListHeaderWidthPatch] {elementType.Name} is a reference type — Harmony's generic " +
+                    "code sharing may make this patch affect unrelated lists. Verify the wire format.");
+
             // Generic instantiations must be patched individually — there is no single
             // definition to hook that covers every T.
             var target = AccessTools.Method(declaringType, methodName, null, new[] { elementType });

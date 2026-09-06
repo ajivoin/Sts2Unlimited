@@ -13,6 +13,7 @@
     <!-- Compiled into the test assembly rather than referenced, so tests can reach the
          internal test seams and no Godot SDK project reference is needed. -->
     <Compile Include="../../PacketSizePatch.cs" Link="PacketSizePatch.cs" />
+    <Compile Include="../../ListHeaderWidthPatch.cs" Link="ListHeaderWidthPatch.cs" />
   </ItemGroup>
 
   <ItemGroup>

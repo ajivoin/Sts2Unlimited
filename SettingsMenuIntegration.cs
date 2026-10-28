@@ -48,6 +48,11 @@ public static class SettingsMenuIntegration
     private const string TickboxTypeName = "MegaCrit.Sts2.Core.Nodes.Screens.Settings.NMuteInBackgroundTickbox";
     private static readonly HashSet<GodotObject> _ourTickboxInstances = new();
 
+    // NSettingsPanel.RefreshSize is private in C# but registered as a Godot method, so Call reaches it.
+    private const string RefreshSizeMethod = "RefreshSize";
+    private const string RefreshHookMeta   = "sts2unlimited_refresh_size_hooked";
+    private static bool _refreshingPanelSize;
+
     public static void InitializeSettingsMenuUI(Harmony harmony)
     {
         try
@@ -146,6 +151,10 @@ public static class SettingsMenuIntegration
             targetParent.MoveChild(divider,   insertAt + 1);
             targetParent.MoveChild(sliderRow, insertAt + 2);
 
+            // Keep the panel's scroll height in step with the rows below — see HookPanelAutoResize.
+            // Hooked here, before the difficulty rows are added, so their insertion is covered too.
+            Node generalPanel = HookPanelAutoResize(targetParent);
+
             var tree = sliderRow.GetTree();
             if (tree == null) return;
 
@@ -153,6 +162,9 @@ public static class SettingsMenuIntegration
             {
                 try { ConfigureMaxPlayersSlider(sliderRow, Sts2Unlimited.MaxPlayersOverride); }
                 catch (Exception e) { GD.PrintErr($"[Sts2Unlimited] Config error: {e.Message}\n{e.StackTrace}"); }
+                // Belt and braces: the signal above fires off Godot's deferred minimum-size pass,
+                // so don't depend on it alone for the first open. By now layout has settled.
+                RefreshPanelSize(generalPanel, targetParent);
             }), (uint)GodotObject.ConnectFlags.OneShot);
 
             // ── Difficulty scaling override ───────────────────────────────────────────
@@ -452,6 +464,66 @@ public static class SettingsMenuIntegration
         return typeName.Contains("Separator") || typeName.Contains("Divider")
             || nodeName.Contains("Separator") || nodeName.Contains("Divider")
             || nodeName.StartsWith("Line");
+    }
+
+    // NSettingsPanel sizes itself to its content exactly once — in its own _Ready — and after that
+    // only when the viewport resizes. Its Size is the scroll extent, and Godot readies children
+    // before parents, so by the time NSettingsScreen._Ready (and this patch) runs, the General
+    // panel is already sized for the vanilla rows and the ones we append can't be scrolled to.
+    // Toggling fullscreen fixes it because that re-runs RefreshSize.
+    //
+    // Re-running RefreshSize on the content container's minimum_size_changed covers every case
+    // rather than just our initial insertion: Container wires each child's minimum_size_changed
+    // and visibility_changed to its own minimum-size update, so this also fires when the
+    // difficulty rows are shown or hidden by the toggle, and when another mod appends rows of
+    // its own to the same container.
+    //
+    // Returns the panel, for callers that want to refresh it directly.
+    private static Node HookPanelAutoResize(Node content)
+    {
+        Node panel = FindAncestorWithMethod(content, RefreshSizeMethod);
+        if (panel == null)
+        {
+            GD.PrintErr($"[Sts2Unlimited] No ancestor of the General container has {RefreshSizeMethod}() " +
+                        "— panel scroll height will not track our rows.");
+            return null;
+        }
+
+        // _Ready runs once per screen instance and the connection dies with the content node, so
+        // this is already per-instance; the meta guard only covers a node readied twice.
+        if (!content.HasMeta(RefreshHookMeta))
+        {
+            content.SetMeta(RefreshHookMeta, true);
+            content.Connect(Control.SignalName.MinimumSizeChanged, Callable.From(() => RefreshPanelSize(panel)));
+            GD.Print($"[Sts2Unlimited] Hooked {panel.Name}.{RefreshSizeMethod}() to content minimum size changes.");
+        }
+
+        return panel;
+    }
+
+    // Pass content to log the resulting scroll height — once per screen open, not on every signal.
+    private static void RefreshPanelSize(Node panel, Node content = null)
+    {
+        if (panel == null || _refreshingPanelSize) return;
+        // RefreshSize assigns the panel's Size, which re-sorts the content it is listening to.
+        _refreshingPanelSize = true;
+        try
+        {
+            panel.Call(RefreshSizeMethod);
+            if (content is Control contentControl && panel is Control panelControl)
+                GD.Print($"[Sts2Unlimited] General panel scroll height {panelControl.Size.Y:0.#} " +
+                         $"for {contentControl.GetMinimumSize().Y:0.#} of content " +
+                         $"({contentControl.GetChildCount()} rows).");
+        }
+        catch (Exception e) { GD.PrintErr($"[Sts2Unlimited] {RefreshSizeMethod}() failed: {e.Message}"); }
+        finally { _refreshingPanelSize = false; }
+    }
+
+    private static Node FindAncestorWithMethod(Node node, string method)
+    {
+        var cur = node?.GetParent();
+        while (cur != null) { if (cur.HasMethod(method)) return cur; cur = cur.GetParent(); }
+        return null;
     }
 
     private static Node FindAncestorBoxContainer(Node node)

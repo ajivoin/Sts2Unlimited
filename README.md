@@ -96,10 +96,19 @@ Output is bundled to `release/` by the `BundleRelease` MSBuild target.
 
 ```
 Sts2Unlimited.cs            — Harmony patches, config loading, entry point
-SettingsMenuIntegration.cs  — Injects slider into the game's settings screen
+SettingsMenuIntegration.cs  — Injects the Max Players and difficulty rows into Settings
+DifficultyPatch.cs          — Scales monster HP, block and damage to the player count
+PacketSizePatch.cs          — Transpiles the lobby player-list header to a fixed 5-bit width
+ListHeaderWidthPatch.cs     — Enforces that width at WriteList/ReadList, which never inline
+CampfirePatch.cs            — Keeps rest-site scene slots bounds-safe past the 4 in the scene
+ChestPatch.cs               — Lays out treasure-room relics for more than 4 players
+SaveDirPatch.cs             — Redirects the save directory per Steam profile
 sts2unlimited.csproj        — Build config and BundleRelease target
 Sts2Unlimited.json          — Mod metadata (name, version, author)
 export_presets.cfg          — Godot resource export config
+tests/PatchTests/           — Headless harness run against the real sts2.dll
+workshop/                   — Steam Workshop store page and item ID (see workshop/README.md)
+scripts/stage-workshop.sh   — Stages a release into the ModUploader workspace
 ```
 
 ## License

@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.IO;
+using System.Text.RegularExpressions;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Multiplayer.Messages.Lobby;
@@ -34,6 +36,7 @@ internal static class Tests
         TranspilerRewritesRealGameIl();
         PatchTargetsResolve();
         SettingsPanelResizeSeam();
+        DocumentedPlayerRangeMatchesTheCode();
         TryWidenSemantics();
         // Must run before the guard is applied — afterwards a vanilla-width read is corrected.
         UnguardedWireFormat();
@@ -156,6 +159,67 @@ internal static class Tests
         }
         catch (Exception e) { Check("NSettingsPanel._Ready IL is readable", false, e.Message); }
         Check("NSettingsPanel sizes itself from _Ready", readyCallsRefresh);
+    }
+
+    // The Workshop page and both READMEs advertised a Max Players range of 2-256 for several
+    // releases while the slider was 2-16 — and the config-file read is unclamped, so readers who
+    // believed it got a silently broken lobby. These are plain-text claims that no compiler
+    // checks, so check them here: every documented range must match the constant behind it.
+    private static void DocumentedPlayerRangeMatchesTheCode()
+    {
+        var root = RepoRoot();
+        if (root == null) { Check("repository root is locatable", false); return; }
+
+        int playerMax     = ConstantFromSource(root, "SettingsMenuIntegration.cs", "PLAYER_MAX");
+        int difficultyMax = ConstantFromSource(root, "SettingsMenuIntegration.cs", "DIFFICULTY_MAX");
+        int absoluteMax   = ConstantFromSource(root, "PacketSizePatch.cs", "AbsoluteMaxPlayers");
+
+        // The wire format is sized for AbsoluteMaxPlayers, so a slider that goes higher would
+        // overflow the player-list header rather than merely feel ambitious.
+        AreEqual("the slider's ceiling is the ceiling the wire format is sized for", absoluteMax, playerMax);
+
+        // "2 to 16", "2–16", "2-16" — the upper bound of any player range stated in prose.
+        var playerRange = new Regex(@"\b2\s*(?:to|–|-)\s*(\d+)\b");
+        var difficultyRange = new Regex(@"\b1\s*(?:to|–|-)\s*(\d+)\b");
+        int rangesChecked = 0;
+
+        foreach (var relative in new[] { "README.md", "MOD_README.md", "workshop/workshop.json" })
+        {
+            var path = Path.Combine(root, relative);
+            if (!File.Exists(path)) { Check($"{relative} exists", false); continue; }
+            var prose = File.ReadAllText(path);
+
+            foreach (Match m in playerRange.Matches(prose))
+            {
+                rangesChecked++;
+                AreEqual($"{relative}: player range 2-{m.Groups[1].Value}", playerMax, int.Parse(m.Groups[1].Value));
+            }
+            foreach (Match m in difficultyRange.Matches(prose))
+            {
+                rangesChecked++;
+                AreEqual($"{relative}: difficulty range 1-{m.Groups[1].Value}", difficultyMax, int.Parse(m.Groups[1].Value));
+            }
+        }
+
+        // Without this the whole check goes quiet if every file is reworded to drop its ranges.
+        Check("the docs state a player range at all", rangesChecked > 0,
+            "no range found in README.md, MOD_README.md or workshop/workshop.json");
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "sts2unlimited.csproj")))
+            dir = dir.Parent;
+        return dir?.FullName;
+    }
+
+    private static int ConstantFromSource(string root, string file, string name)
+    {
+        var source = File.ReadAllText(Path.Combine(root, file));
+        var match = Regex.Match(source, $@"\b{Regex.Escape(name)}\s*=\s*(\d+)");
+        if (!match.Success) { Check($"{name} found in {file}", false); return -1; }
+        return int.Parse(match.Groups[1].Value);
     }
 
     // Mirrors PacketSizePatch.Apply's discovery across the whole game assembly, without calling

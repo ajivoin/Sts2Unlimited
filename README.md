@@ -1,6 +1,6 @@
 # STS 2 Unlimited
 
-Play **Slay the Spire 2** multiplayer with any number of players. The vanilla game caps lobbies at 4; this mod removes that limit and lets you configure it from the in-game settings menu.
+Play **Slay the Spire 2** multiplayer with up to 16 players. The vanilla game caps lobbies at 4; this mod raises that limit and lets you configure it from the in-game settings menu.
 
 ![screenshot](example.png)
 
@@ -40,9 +40,11 @@ Steam game updates overwrite the binary, so re-apply after every update. See [#9
 
 ## Configuration
 
-The easiest way is the **in-game settings menu**: open Settings and use the "Max Players" slider (range: 2–256). Changes save automatically.
+The easiest way is the **in-game settings menu**: open Settings and use the "Max Players" slider (range: 2–16). Changes save automatically and apply to the next lobby you host. The default is **8 players**.
 
-Alternatively, edit `sts2unlimited.maxplayers.txt` in the mods folder and restart the game. The default is **8 players**.
+16 is a hard ceiling rather than a slider preference: the lobby player-list packet header is widened to a fixed width sized for 16 players, so every peer agrees on the wire format (see [How It Works](#how-it-works)). The config file below is **not** clamped, so a larger value is accepted and then breaks lobbies.
+
+Alternatively, edit `sts2unlimited.maxplayers.txt` next to the mod's DLL and restart the game. This is a legacy fallback, consulted only when `sts2unlimited.settings.json` has no `MaxPlayers` key — once you have used the in-game slider, the text file is ignored.
 
 ## How It Works
 
@@ -56,9 +58,9 @@ The game's networking layer already supports arbitrary player counts — the lim
 | `NCustomRunScreen.InitializeMultiplayerAsHost()` | Custom run lobby |
 
 Multiplayer packets carry the lobby player list behind a 3-bit length header, capping it
-at 7. The mod transpiles those call sites to a fixed 5-bit header (always 5, never your
-local Max Players setting — peers must agree on the wire format regardless of what each
-has configured).
+at 7. The mod transpiles those call sites to a fixed 5-bit header, sized for the mod's
+16-player ceiling (always 5, never your local Max Players setting — peers must agree on
+the wire format regardless of what each has configured).
 
 Because another mod can cause the JIT to inline the game's original, unpatched
 `Serialize` before this mod loads — STS2-RitsuLib patches
@@ -94,10 +96,19 @@ Output is bundled to `release/` by the `BundleRelease` MSBuild target.
 
 ```
 Sts2Unlimited.cs            — Harmony patches, config loading, entry point
-SettingsMenuIntegration.cs  — Injects slider into the game's settings screen
+SettingsMenuIntegration.cs  — Injects the Max Players and difficulty rows into Settings
+DifficultyPatch.cs          — Scales monster HP, block and damage to the player count
+PacketSizePatch.cs          — Transpiles the lobby player-list header to a fixed 5-bit width
+ListHeaderWidthPatch.cs     — Enforces that width at WriteList/ReadList, which never inline
+CampfirePatch.cs            — Keeps rest-site scene slots bounds-safe past the 4 in the scene
+ChestPatch.cs               — Lays out treasure-room relics for more than 4 players
+SaveDirPatch.cs             — Redirects the save directory per Steam profile
 sts2unlimited.csproj        — Build config and BundleRelease target
 Sts2Unlimited.json          — Mod metadata (name, version, author)
 export_presets.cfg          — Godot resource export config
+tests/PatchTests/           — Headless harness run against the real sts2.dll
+workshop/                   — Steam Workshop store page and item ID (see workshop/README.md)
+scripts/stage-workshop.sh   — Stages a release into the ModUploader workspace
 ```
 
 ## License

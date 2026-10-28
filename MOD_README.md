@@ -1,6 +1,6 @@
 # STS 2 Unlimited
 
-Play **Slay the Spire 2** multiplayer with any number of players instead of the hardcoded limit of 4.
+Play **Slay the Spire 2** multiplayer with up to 16 players instead of the hardcoded limit of 4.
 
 ## Installation
 
@@ -20,16 +20,16 @@ Launch the game — the mod loads automatically.
 
 ## Configuration
 
-Open the in-game **Settings** menu and use the **Max Players** slider. Changes are saved automatically.
+Open the in-game **Settings** menu and use the **Max Players** slider (range: 2–16). Changes are saved automatically and apply to the next lobby you host.
 
-To configure without launching the game, edit `sts2unlimited.maxplayers.txt` in the mods folder and set it to any number. Restart the game to apply.
+To configure without launching the game, edit `sts2unlimited.maxplayers.txt` in the same folder as the mod's other files and restart. This is a legacy fallback: once you have used the in-game slider the value lives in `sts2unlimited.settings.json` and the text file is ignored.
 
-The default is **8 players**.
+The default is **8 players** and 16 is the maximum. Higher values are not clamped, but they break lobbies — every peer has to agree on the packet format, which is sized for 16.
 
 ## Troubleshooting
 
 **Lobby still shows 4 player slots**
-- Restart the game after changing the config
+- Restart the game after editing `sts2unlimited.maxplayers.txt` (slider changes need no restart; they apply to the next lobby you host)
 - Make sure `sts2unlimited.maxplayers.txt` is in the same folder as the DLLs and contains only a number
 
 **Game crashes on startup**
@@ -37,7 +37,7 @@ The default is **8 players**.
 - Check that the files are in the correct `mods/` directory
 
 **Slider not visible in Settings**
-- Ensure `Sts2Unlimited.pck` is present alongside the DLL
+- Ensure `sts2unlimited.pck` is present alongside the DLL
 - Check the game log for any mod loading errors
 
 ## Limitations

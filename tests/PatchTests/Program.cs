@@ -33,6 +33,7 @@ internal static class Tests
         RequiredBitsMath();
         TranspilerRewritesRealGameIl();
         PatchTargetsResolve();
+        SettingsPanelResizeSeam();
         TryWidenSemantics();
         // Must run before the guard is applied — afterwards a vanilla-width read is corrected.
         UnguardedWireFormat();
@@ -114,6 +115,47 @@ internal static class Tests
             if (read != null)
                 AreEqual($"ReadList<{t.Name}> arg 0", "lengthBits", read.GetParameters()[0].Name);
         }
+    }
+
+    // SettingsMenuIntegration appends rows to the General panel from a postfix on
+    // NSettingsScreen._Ready, which runs after the panel has already sized itself to the vanilla
+    // rows — so it nudges the panel afterwards with Call("RefreshSize"). Metadata only: every
+    // assertion here is game-version-sensitive, and none of it can touch a Godot node headlessly.
+    private static void SettingsPanelResizeSeam()
+    {
+        var panelType = Type.GetType(
+            "MegaCrit.Sts2.Core.Nodes.Screens.Settings.NSettingsPanel, sts2", false);
+        Check("NSettingsPanel resolves", panelType != null);
+        if (panelType == null) return;
+
+        var refreshSize = panelType.GetMethod("RefreshSize",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+            null, Type.EmptyTypes, null);
+        Check("NSettingsPanel.RefreshSize() resolves", refreshSize != null);
+
+        // RefreshSize is private in C#. Call() reaches it only because the Godot source generator
+        // registered it — the generated MethodName field is that registration's fingerprint.
+        var methodNames = panelType.GetNestedType("MethodName", BindingFlags.Public | BindingFlags.NonPublic);
+        Check("RefreshSize is registered as a Godot method (reachable via Call)",
+            methodNames?.GetField("RefreshSize", BindingFlags.Public | BindingFlags.Static) != null);
+
+        // The container RefreshSize measures. Our rows go into the same node, found via
+        // %ModdingDivider's parent rather than this property, so this guards the relationship.
+        var content = panelType.GetProperty("Content", BindingFlags.Public | BindingFlags.Instance);
+        AreEqual("NSettingsPanel.Content is the content container", "VBoxContainer", content?.PropertyType.Name);
+
+        // The bug's precondition: the panel's only eager sizing pass is in _Ready. If a future
+        // build grows one that reacts to added rows, this fails and the nudge can go away.
+        var ready = panelType.GetMethod("_Ready", BindingFlags.Public | BindingFlags.Instance);
+        if (ready == null) { Check("NSettingsPanel._Ready resolves", false); return; }
+        bool readyCallsRefresh = false;
+        try
+        {
+            readyCallsRefresh = PatchProcessor.GetOriginalInstructions(ready)
+                .Any(c => c.operand is MethodInfo mi && mi.Name == "RefreshSize");
+        }
+        catch (Exception e) { Check("NSettingsPanel._Ready IL is readable", false, e.Message); }
+        Check("NSettingsPanel sizes itself from _Ready", readyCallsRefresh);
     }
 
     // Mirrors PacketSizePatch.Apply's discovery across the whole game assembly, without calling

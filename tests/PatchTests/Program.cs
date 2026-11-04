@@ -42,6 +42,7 @@ internal static class Tests
         UnguardedWireFormat();
         GuardWidensVanillaWidthCalls();
         GuardWarnsWhenThereIsNothingToGuard();
+        DifficultySyncMessageRoundTrips();
 
         Console.WriteLine(_failures == 0 ? "\nALL TESTS PASSED" : $"\n{_failures} TEST(S) FAILED");
         return _failures == 0 ? 0 : 1;
@@ -336,6 +337,43 @@ internal static class Tests
         ListHeaderWidthPatch.Apply(new Harmony("sts2unlimited.tests.empty"));
         Check("an empty type set logs a warning",
             _log.Any(l => l.StartsWith("Warn") && l.Contains("inactive")), string.Join(" | ", _log));
+    }
+
+    // The host's value has to survive the game's own bit-packing unchanged, and a packet that
+    // did not come from this mod has to be recognisable as foreign. Mod-added message ids are
+    // positional, so a peer running a different set of message-adding mods can route someone
+    // else's message in here; the sentinel is the only thing standing between that and a
+    // silently applied bogus player count.
+    private static void DifficultySyncMessageRoundTrips()
+    {
+        foreach (int count in new[] { DifficultySyncMessage.NoOverride, 1, 4, 16, 255 })
+        {
+            var writer = new PacketWriter();
+            writer.Reset();
+            new DifficultySyncMessage(count).Serialize(writer);
+
+            var reader = new PacketReader();
+            reader.Reset(writer.Buffer);
+            var received = new DifficultySyncMessage();
+            received.Deserialize(reader);
+
+            Check($"round trip {count} is valid", received.IsValid);
+            AreEqual($"round trip {count} preserves the count", count, received.EffectiveCount);
+            AreEqual($"round trip {count} costs 40 bits", 40, writer.BitPosition);
+        }
+
+        // A foreign payload: right length, wrong sentinel.
+        var foreign = new PacketWriter();
+        foreign.Reset();
+        foreign.WriteInt(0x0BADF00D, 32);
+        foreign.WriteInt(7, 8);
+
+        var foreignReader = new PacketReader();
+        foreignReader.Reset(foreign.Buffer);
+        var rejected = new DifficultySyncMessage();
+        rejected.Deserialize(foreignReader);
+
+        Check("a foreign sentinel is not valid", !rejected.IsValid);
     }
 
     // Drives the leaves by reflection so no test names the element type.

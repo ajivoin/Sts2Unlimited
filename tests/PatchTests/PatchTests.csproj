@@ -14,6 +14,8 @@
          internal test seams and no Godot SDK project reference is needed. -->
     <Compile Include="../../PacketSizePatch.cs" Link="PacketSizePatch.cs" />
     <Compile Include="../../ListHeaderWidthPatch.cs" Link="ListHeaderWidthPatch.cs" />
+    <Compile Include="../../DifficultySyncMessage.cs" Link="DifficultySyncMessage.cs" />
+    <Compile Include="../../DifficultySync.cs" Link="DifficultySync.cs" />
   </ItemGroup>
 
   <ItemGroup>

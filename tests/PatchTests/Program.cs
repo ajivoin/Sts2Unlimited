@@ -10,6 +10,7 @@ using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Multiplayer;
+using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Multiplayer.Game.Lobby;
 using MegaCrit.Sts2.Core.Multiplayer.Messages.Lobby;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
@@ -50,6 +51,7 @@ internal static class Tests
         HpFormulaStillMatchesTheBugReport();
         ReceivingHostValue();
         SyncPatchTargetsResolve();
+        HostBroadcastRoleGate();
 
         Console.WriteLine(_failures == 0 ? "\nALL TESTS PASSED" : $"\n{_failures} TEST(S) FAILED");
         return _failures == 0 ? 0 : 1;
@@ -522,6 +524,60 @@ internal static class Tests
             AccessTools.Field(typeof(RunLobby), "_netService") != null);
         Check("RunLobby.Dispose resolves",
             AccessTools.Method(typeof(RunLobby), "Dispose") != null);
+    }
+
+    // Guards the Finding-1 fix: StartRunLobby.BeginRunLocally is reached from BOTH the host path
+    // (BeginRunForAllPlayers) and the client path (HandleLobbyBeginRunMessage). Without gating the
+    // broadcast decision on the service's actual role, a client handling the host's begin-run
+    // message would latch its own setting as "local host" and clobber the value it just received.
+    private static void HostBroadcastRoleGate()
+    {
+        // A client must not broadcast, must not mark the run, and must not touch the latch.
+        DifficultySync.Reset();
+        DifficultySync.Latch(6, "host");
+        Check("client does not broadcast",
+            !DifficultySync.TryBeginHostBroadcast(NetGameType.Client, out _));
+        Check("client leaves the host's latch intact", DifficultySync.TryGetHostEffectiveCount(out int kept));
+        AreEqual("client keeps the host's value", 6, kept);
+
+        // Singleplayer and replay must never be treated as multiplayer runs.
+        DifficultySync.Reset();
+        Check("singleplayer does not broadcast",
+            !DifficultySync.TryBeginHostBroadcast(NetGameType.Singleplayer, out _));
+        Check("singleplayer is not a multiplayer run", !DifficultySync.IsMultiplayerRun);
+        Check("replay does not broadcast",
+            !DifficultySync.TryBeginHostBroadcast(NetGameType.Replay, out _));
+        Check("replay is not a multiplayer run", !DifficultySync.IsMultiplayerRun);
+
+        // A host broadcasts exactly once per run, latching its own resolved value.
+        DifficultySync.Reset();
+        DifficultySync.LocalOverrideEnabled = () => true;
+        DifficultySync.LocalPlayersOverride = () => 7;
+        Check("host broadcasts", DifficultySync.TryBeginHostBroadcast(NetGameType.Host, out int sent));
+        AreEqual("host broadcasts its resolved value", 7, sent);
+        Check("host marks the run as multiplayer", DifficultySync.IsMultiplayerRun);
+        Check("host latched its own value", DifficultySync.TryGetHostEffectiveCount(out int own));
+        AreEqual("host latched the same value it sent", 7, own);
+        Check("host does not broadcast twice in one run",
+            !DifficultySync.TryBeginHostBroadcast(NetGameType.Host, out _));
+
+        // A new run broadcasts again, so Reset() must clear the once-per-run guard.
+        DifficultySync.Reset();
+        Check("a new run broadcasts again",
+            DifficultySync.TryBeginHostBroadcast(NetGameType.Host, out _));
+
+        DifficultySync.LocalOverrideEnabled = () => false;
+        DifficultySync.LocalPlayersOverride = () => 0;
+
+        // A null StartRunLobby instance (the prefix's null-conditional __instance?.NetService)
+        // means the role is unknown, so this must degrade gracefully: warn, don't throw, and
+        // don't mark the run as multiplayer.
+        DifficultySync.Reset();
+        var nullServiceLog = new List<string>();
+        DifficultySync.LogSink = (level, message) => nullServiceLog.Add($"{level}: {message}");
+        DifficultySync.Prefix_StartRunLobbyBeginRun(null);
+        Check("null net service warns", nullServiceLog.Any(l => l.StartsWith("Warn")));
+        Check("null net service does not mark multiplayer", !DifficultySync.IsMultiplayerRun);
     }
 
     private static PacketWriter WriteEmptyList(Type elementType, int lengthBits)

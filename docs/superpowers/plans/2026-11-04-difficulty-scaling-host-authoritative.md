@@ -373,6 +373,7 @@ public static class DifficultySync
     private static int? _hostEffectiveCount;
     private static bool _isMultiplayerRun;
     private static bool _warnedUnsynced;
+    private static bool _broadcastThisRun;
 
     public static bool IsMultiplayerRun => _isMultiplayerRun;
 
@@ -453,6 +454,7 @@ public static class DifficultySync
         _hostEffectiveCount = null;
         _isMultiplayerRun   = false;
         _warnedUnsynced     = false;
+        _broadcastThisRun   = false;
     }
 }
 ```
@@ -711,25 +713,52 @@ Add to `DifficultySync.cs`, and extend its usings with `using MegaCrit.Sts2.Core
 
 ```csharp
     /// <summary>
+    /// Decides whether this peer should broadcast as host, and what value — the whole decision as
+    /// a pure function of the service's role plus the local settings, so it is testable without
+    /// faking INetGameService (whose event members reference types the harness cannot load).
+    ///
+    /// ONLY a true host may act. This gate is load-bearing: the game reaches
+    /// StartRunLobby.BeginRunLocally from BOTH StartRunLobby.BeginRunForAllPlayers (host) and
+    /// StartRunLobby.HandleLobbyBeginRunMessage (client). Without the gate, a client handling the
+    /// host's begin-run message would latch its OWN setting as "local host" and clobber the value
+    /// the host just sent it — reintroducing the exact divergence this feature exists to prevent.
+    /// It also keeps singleplayer (NetGameType.Singleplayer) and replays (NetGameType.Replay) from
+    /// ever being treated as multiplayer runs, which would bypass the singleplayer toggle.
+    ///
+    /// Idempotent per run: the host reaches this twice per start (BeginRunForAllPlayers then the
+    /// nested BeginRunLocally), and one packet is enough. Cleared by <see cref="Reset"/>.
+    /// </summary>
+    internal static bool TryBeginHostBroadcast(NetGameType type, out int value)
+    {
+        value = DifficultySyncMessage.NoOverride;
+
+        if (type != NetGameType.Host) return false;
+        if (_broadcastThisRun) return false;
+
+        _broadcastThisRun = true;
+        MarkMultiplayerRun();
+
+        value = ResolveLocalOverrideForBroadcast(LocalOverrideEnabled(), LocalPlayersOverride());
+        Latch(value, "local host");
+        return true;
+    }
+
+    /// <summary>
     /// Host side of run start. Sends before the vanilla begin-run message on the same Reliable
     /// channel so peers latch the value before the first CombatState.CreateCreature, and latches
     /// locally too — so host and clients then follow the identical resolve path.
     /// </summary>
     private static void SendHostValue(INetGameService netService, string seam)
     {
-        MarkMultiplayerRun();
-
-        int value = ResolveLocalOverrideForBroadcast(
-            LocalOverrideEnabled(), LocalPlayersOverride());
-        Latch(value, "local host");
-
         if (netService == null)
         {
             LogSink(LogLevel.Warn,
-                $"[DifficultySync] {seam}: no net service available, so the difficulty value " +
-                $"was not broadcast. Clients will scale by the actual player count.");
+                $"[DifficultySync] {seam}: no net service available, so no difficulty value was " +
+                $"broadcast and this peer's role is unknown. Peers will scale by the actual player count.");
             return;
         }
+
+        if (!TryBeginHostBroadcast(netService.Type, out int value)) return;
 
         try
         {
@@ -795,10 +824,65 @@ In `DifficultySync.Apply`, after the existing receive registration, add:
                  "RunLobby.Dispose (clear synced state)");
 ```
 
-- [ ] **Step 3: Run the tests**
+- [ ] **Step 3: Write the role-gate tests, then run the suite**
+
+These are not optional extras: the first two are the regression test for a defect that shipped in
+this task's first attempt. Add to `tests/PatchTests/Program.cs` and call `HostBroadcastRoleGate();`
+from `Main`:
+
+```csharp
+    // The game reaches StartRunLobby.BeginRunLocally from the host path
+    // (BeginRunForAllPlayers) AND the client path (HandleLobbyBeginRunMessage), and both are
+    // patched with the host-send prefix. Only a real host may latch "local host" — otherwise a
+    // client clobbers the value the host just sent it and the run diverges, which is the whole
+    // bug this feature exists to prevent.
+    private static void HostBroadcastRoleGate()
+    {
+        // A client must not broadcast, must not mark the run, and must not touch the latch.
+        DifficultySync.Reset();
+        DifficultySync.Latch(6, "host");
+        Check("client does not broadcast",
+            !DifficultySync.TryBeginHostBroadcast(NetGameType.Client, out _));
+        Check("client leaves the host's latch intact", DifficultySync.TryGetHostEffectiveCount(out int kept));
+        AreEqual("client keeps the host's value", 6, kept);
+
+        // Singleplayer and replay must never be treated as multiplayer runs.
+        DifficultySync.Reset();
+        Check("singleplayer does not broadcast",
+            !DifficultySync.TryBeginHostBroadcast(NetGameType.Singleplayer, out _));
+        Check("singleplayer is not a multiplayer run", !DifficultySync.IsMultiplayerRun);
+        Check("replay does not broadcast",
+            !DifficultySync.TryBeginHostBroadcast(NetGameType.Replay, out _));
+        Check("replay is not a multiplayer run", !DifficultySync.IsMultiplayerRun);
+
+        // A host broadcasts exactly once per run, latching its own resolved value.
+        DifficultySync.Reset();
+        DifficultySync.LocalOverrideEnabled = () => true;
+        DifficultySync.LocalPlayersOverride = () => 7;
+        Check("host broadcasts", DifficultySync.TryBeginHostBroadcast(NetGameType.Host, out int sent));
+        AreEqual("host broadcasts its resolved value", 7, sent);
+        Check("host marks the run as multiplayer", DifficultySync.IsMultiplayerRun);
+        Check("host latched its own value", DifficultySync.TryGetHostEffectiveCount(out int own));
+        AreEqual("host latched the same value it sent", 7, own);
+        Check("host does not broadcast twice in one run",
+            !DifficultySync.TryBeginHostBroadcast(NetGameType.Host, out _));
+
+        // A new run broadcasts again, so Reset() must clear the once-per-run guard.
+        DifficultySync.Reset();
+        Check("a new run broadcasts again",
+            DifficultySync.TryBeginHostBroadcast(NetGameType.Host, out _));
+
+        DifficultySync.LocalOverrideEnabled = () => false;
+        DifficultySync.LocalPlayersOverride = () => 0;
+    }
+```
+
+Add `using MegaCrit.Sts2.Core.Multiplayer.Game;` for `NetGameType` if it is not already present.
 
 Run: `dotnet run --project tests/PatchTests`
-Expected: still all green — these seams are not exercised headlessly, but nothing may regress.
+Expected: all green, including the new role-gate assertions.
+
+Prove the gate's first two assertions have teeth: temporarily change `if (type != NetGameType.Host) return false;` to `if (false) return false;`, re-run, and confirm "client keeps the host's value" FAILS. Restore it.
 
 - [ ] **Step 4: Build the mod**
 

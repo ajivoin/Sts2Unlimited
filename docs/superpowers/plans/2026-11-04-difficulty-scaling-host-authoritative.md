@@ -952,8 +952,20 @@ Add to `DifficultySync.cs`:
             return;
         }
 
-        int value = ResolveLocalOverrideForBroadcast(
-            LocalOverrideEnabled(), LocalPlayersOverride());
+        // Defence in depth, mirroring the run-start gate. ClientRejoinRequestMessage has
+        // ShouldBroadcast = false, so today only the host handles it and this check never fires —
+        // but a future game build that broadcast it would otherwise have every client answer the
+        // rejoiner with its own local value, which is the clobbering bug the run-start gate exists
+        // to prevent. Cheap insurance against a one-line change in somebody else's code.
+        if (netService.Type != NetGameType.Host) return;
+
+        // Send the value THIS RUN is actually using, not a freshly resolved one: the latch is the
+        // authoritative number every other peer already has. These coincide today because settings
+        // are locked while a run is in progress, but re-resolving would silently hand a rejoiner a
+        // different number if that ever stopped being true.
+        int value = TryGetHostEffectiveCount(out int latched)
+            ? latched
+            : ResolveLocalOverrideForBroadcast(LocalOverrideEnabled(), LocalPlayersOverride());
 
         try
         {

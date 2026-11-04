@@ -9,6 +9,8 @@ using System.Text.RegularExpressions;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Logging;
+using MegaCrit.Sts2.Core.Multiplayer;
+using MegaCrit.Sts2.Core.Multiplayer.Game.Lobby;
 using MegaCrit.Sts2.Core.Multiplayer.Messages.Lobby;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 using MegaCrit.Sts2.Core.Saves.Runs;
@@ -46,6 +48,8 @@ internal static class Tests
         DifficultySyncMessageRoundTrips();
         DifficultyDecisionTable();
         HpFormulaStillMatchesTheBugReport();
+        ReceivingHostValue();
+        SyncPatchTargetsResolve();
 
         Console.WriteLine(_failures == 0 ? "\nALL TESTS PASSED" : $"\n{_failures} TEST(S) FAILED");
         return _failures == 0 ? 0 : 1;
@@ -461,6 +465,65 @@ internal static class Tests
     }
 
     // Drives the leaves by reflection so no test names the element type.
+    // The receive path, driven directly: a valid message latches, a foreign one is dropped and
+    // reported, and an unrelated game message is ignored without noise.
+    private static void ReceivingHostValue()
+    {
+        var captured = new List<string>();
+        DifficultySync.LogSink = (level, message) => captured.Add($"{level}: {message}");
+
+        DifficultySync.Reset();
+        DifficultySync.Prefix_SendMessageToAllHandlers(new DifficultySyncMessage(7), 42UL);
+        Check("a valid message latches", DifficultySync.TryGetHostEffectiveCount(out int latched));
+        AreEqual("a valid message latches its count", 7, latched);
+
+        // A foreign payload decoded into our type: sentinel absent because it never round-tripped.
+        DifficultySync.Reset();
+        captured.Clear();
+        DifficultySync.Prefix_SendMessageToAllHandlers(new DifficultySyncMessage(), 42UL);
+        Check("a message with no sentinel is dropped", !DifficultySync.TryGetHostEffectiveCount(out _));
+        AreEqual("dropping a foreign message warns", 1, captured.Count(l => l.StartsWith("Warn")));
+
+        // Someone else's message must pass straight through.
+        DifficultySync.Reset();
+        captured.Clear();
+        DifficultySync.Prefix_SendMessageToAllHandlers(new LobbySeedChangedMessage(), 42UL);
+        Check("an unrelated message does not latch", !DifficultySync.TryGetHostEffectiveCount(out _));
+        AreEqual("an unrelated message logs nothing", 0, captured.Count);
+    }
+
+    // The patch targets this task and Tasks 4-5 hook, resolved against the real sts2.dll. These
+    // are the signatures that silently move between game builds; a rename shows up here rather
+    // than as a mod that loads fine and syncs nothing.
+    private static void SyncPatchTargetsResolve()
+    {
+        Check("NetMessageBus.SendMessageToAllHandlers resolves",
+            AccessTools.Method(typeof(NetMessageBus), "SendMessageToAllHandlers",
+                new[] { typeof(INetMessage), typeof(ulong) }) != null);
+        Check("StartRunLobby.BeginRunForAllPlayers resolves",
+            AccessTools.Method(typeof(StartRunLobby), "BeginRunForAllPlayers") != null);
+        Check("StartRunLobby.BeginRunLocally resolves",
+            AccessTools.Method(typeof(StartRunLobby), "BeginRunLocally") != null);
+        Check("StartRunLobby.HandleLobbyBeginRunMessage resolves",
+            AccessTools.Method(typeof(StartRunLobby), "HandleLobbyBeginRunMessage") != null);
+        Check("StartRunLobby.NetService resolves",
+            AccessTools.Property(typeof(StartRunLobby), "NetService") != null);
+        Check("LoadRunLobby.TryBeginRunForAllPlayers resolves",
+            AccessTools.Method(typeof(LoadRunLobby), "TryBeginRunForAllPlayers") != null);
+        Check("LoadRunLobby.BeginRunLocally resolves",
+            AccessTools.Method(typeof(LoadRunLobby), "BeginRunLocally") != null);
+        Check("LoadRunLobby.HandleLobbyBeginRunMessage resolves",
+            AccessTools.Method(typeof(LoadRunLobby), "HandleLobbyBeginRunMessage") != null);
+        Check("LoadRunLobby.NetService resolves",
+            AccessTools.Property(typeof(LoadRunLobby), "NetService") != null);
+        Check("RunLobby.HandleClientRejoinRequestMessage resolves",
+            AccessTools.Method(typeof(RunLobby), "HandleClientRejoinRequestMessage") != null);
+        Check("RunLobby._netService resolves",
+            AccessTools.Field(typeof(RunLobby), "_netService") != null);
+        Check("RunLobby.Dispose resolves",
+            AccessTools.Method(typeof(RunLobby), "Dispose") != null);
+    }
+
     private static PacketWriter WriteEmptyList(Type elementType, int lengthBits)
     {
         var writer = new PacketWriter();

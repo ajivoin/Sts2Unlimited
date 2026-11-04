@@ -1,5 +1,9 @@
 using System;
+using System.Reflection;
+using HarmonyLib;
 using MegaCrit.Sts2.Core.Logging;
+using MegaCrit.Sts2.Core.Multiplayer;
+using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 
 namespace Sts2Unlimited;
 
@@ -110,5 +114,62 @@ public static class DifficultySync
         _hostEffectiveCount = null;
         _isMultiplayerRun   = false;
         _warnedUnsynced     = false;
+    }
+
+    /// <summary>
+    /// Every inbound message passes through here, on host and client alike, which is why this is
+    /// the receive seam: no service reference to find, and no subscription lifecycle to leak.
+    /// </summary>
+    public static void Prefix_SendMessageToAllHandlers(INetMessage message, ulong senderId)
+    {
+        if (message is not DifficultySyncMessage sync) return;
+
+        if (!sync.IsValid)
+        {
+            LogSink(LogLevel.Warn,
+                $"[DifficultySync] Dropped a difficulty-sync message with an unrecognised " +
+                $"sentinel (0x{sync.Sentinel:X8}) from {senderId}. Mod-added message ids are " +
+                $"positional, so this is most likely another mod's message decoded into ours — " +
+                $"check that every peer has the same mods installed.");
+            return;
+        }
+
+        Latch(sync.EffectiveCount, $"peer {senderId}");
+    }
+
+    public static void Apply(Harmony harmony)
+    {
+        TryPatch(harmony, AccessTools.Method(typeof(NetMessageBus), "SendMessageToAllHandlers",
+                     new[] { typeof(INetMessage), typeof(ulong) }),
+                 nameof(Prefix_SendMessageToAllHandlers), prefix: true,
+                 "NetMessageBus.SendMessageToAllHandlers (receive host difficulty value)");
+    }
+
+    /// <summary>
+    /// House style: resolve, warn and skip when the game moved the method, never throw out of
+    /// ApplyHarmonyPatches.
+    /// </summary>
+    private static void TryPatch(Harmony harmony, MethodBase target, string patchName,
+                                 bool prefix, string description)
+    {
+        if (target == null)
+        {
+            LogSink(LogLevel.Warn, $"[DifficultySync] {description} NOT FOUND — skipping.");
+            return;
+        }
+
+        var patch = new HarmonyMethod(typeof(DifficultySync).GetMethod(patchName,
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static));
+
+        try
+        {
+            if (prefix) harmony.Patch(target, prefix: patch);
+            else        harmony.Patch(target, postfix: patch);
+            LogSink(LogLevel.Info, $"[DifficultySync] Patched {description}.");
+        }
+        catch (Exception e)
+        {
+            LogSink(LogLevel.Warn, $"[DifficultySync] Failed to patch {description}: {e.Message}");
+        }
     }
 }

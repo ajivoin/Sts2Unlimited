@@ -333,6 +333,12 @@ public static class Sts2Unlimited
 
 			// Patch difficulty scaling to support player-count override
 			DifficultyPatch.Apply(harmony);
+
+			// DifficultySync is compiled into the headless harness, which does not compile this
+			// file — so it reads the local settings through providers rather than directly.
+			DifficultySync.LocalOverrideEnabled = () => DifficultyOverrideEnabled;
+			DifficultySync.LocalPlayersOverride = () => DifficultyPlayersOverride;
+			DifficultySync.Apply(harmony);
 		}
 		catch (Exception e)
 		{

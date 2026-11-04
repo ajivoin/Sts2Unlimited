@@ -286,6 +286,15 @@ Add to `tests/PatchTests/Program.cs` and call `DifficultyDecisionTable();` and `
             DifficultySync.Resolve(3, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: false));
         AreEqual("unsynced warns exactly once", 1, captured.Count(l => l.StartsWith("Warn")));
 
+        // ...but the next run must warn again, so Reset() has to clear the once-only flag.
+        // Without this case, deleting `_warnedUnsynced = false` from Reset() passes every assertion.
+        DifficultySync.Reset();
+        DifficultySync.MarkMultiplayerRun();
+        captured.Clear();
+        AreEqual("mp, unsynced after reset -> actual", 3,
+            DifficultySync.Resolve(3, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: false));
+        AreEqual("a new unsynced run warns again", 1, captured.Count(l => l.StartsWith("Warn")));
+
         // A latch arriving before the client's begin-run seam must survive it.
         DifficultySync.Reset();
         DifficultySync.Latch(6, "test");

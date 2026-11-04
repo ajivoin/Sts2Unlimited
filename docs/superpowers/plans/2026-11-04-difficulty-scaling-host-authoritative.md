@@ -1054,8 +1054,12 @@ Replace `ConfigureDifficultySlider` (line 282) with:
     // and lock the row — see DifficultySync. Falls back to the local setting everywhere else.
     private static void ConfigureDifficultySlider(Node diffSliderRow, int currentDifficulty)
     {
+        // hostValue is pre-initialised rather than declared in the `out`: when IsMultiplayerRun is
+        // false the call never runs, and C#'s definite-assignment analysis cannot correlate
+        // hostControls with hostValue at the ternary below (CS0165).
+        int hostValue = DifficultySyncMessage.NoOverride;
         bool hostControls = DifficultySync.IsMultiplayerRun
-                         && DifficultySync.TryGetHostEffectiveCount(out int hostValue)
+                         && DifficultySync.TryGetHostEffectiveCount(out hostValue)
                          && hostValue != DifficultySyncMessage.NoOverride;
 
         int displayed = hostControls ? hostValue : currentDifficulty;
@@ -1104,12 +1108,29 @@ Replace `ConfigureDifficultySlider` (line 282) with:
 
 ```csharp
     // ConfigureSlider resolves this internally; the host-controlled lock needs it too.
+    // Reports a failed lookup like every other lookup in this file: returning null silently would
+    // leave the row greyed but still draggable, with nothing in the log to explain it.
     private static Node FindSliderControl(Node row)
     {
         var masterType = Type.GetType(
             "MegaCrit.Sts2.Core.Nodes.Screens.Settings.NMasterVolumeSlider, sts2", false);
+        if (masterType == null)
+        {
+            GD.PrintErr("[Sts2Unlimited] NMasterVolumeSlider type not found — difficulty row left unlocked.");
+            return null;
+        }
+
         var sliderControl = FindNodeByType(row, masterType);
-        return sliderControl?.GetNodeOrNull("Slider");
+        if (sliderControl == null)
+        {
+            GD.PrintErr("[Sts2Unlimited] NMasterVolumeSlider not found in the difficulty row — left unlocked.");
+            return null;
+        }
+
+        var slider = sliderControl.GetNodeOrNull("Slider");
+        if (slider == null)
+            GD.PrintErr("[Sts2Unlimited] 'Slider' child not found in the difficulty row — left unlocked.");
+        return slider;
     }
 ```
 

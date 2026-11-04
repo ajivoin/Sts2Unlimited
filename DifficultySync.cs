@@ -3,6 +3,8 @@ using System.Reflection;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Multiplayer;
+using MegaCrit.Sts2.Core.Multiplayer.Game;
+using MegaCrit.Sts2.Core.Multiplayer.Game.Lobby;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
 
 namespace Sts2Unlimited;
@@ -137,12 +139,90 @@ public static class DifficultySync
         Latch(sync.EffectiveCount, $"peer {senderId}");
     }
 
+    /// <summary>
+    /// Host side of run start. Sends before the vanilla begin-run message on the same Reliable
+    /// channel so peers latch the value before the first CombatState.CreateCreature, and latches
+    /// locally too — so host and clients then follow the identical resolve path.
+    /// </summary>
+    private static void SendHostValue(INetGameService netService, string seam)
+    {
+        MarkMultiplayerRun();
+
+        int value = ResolveLocalOverrideForBroadcast(
+            LocalOverrideEnabled(), LocalPlayersOverride());
+        Latch(value, "local host");
+
+        if (netService == null)
+        {
+            LogSink(LogLevel.Warn,
+                $"[DifficultySync] {seam}: no net service available, so the difficulty value " +
+                $"was not broadcast. Clients will scale by the actual player count.");
+            return;
+        }
+
+        try
+        {
+            netService.SendMessage(new DifficultySyncMessage(value));
+            LogSink(LogLevel.Info, $"[DifficultySync] {seam}: broadcast difficulty value {value}.");
+        }
+        catch (Exception e)
+        {
+            LogSink(LogLevel.Warn, $"[DifficultySync] {seam}: broadcast failed: {e.Message}");
+        }
+    }
+
+    public static void Prefix_StartRunLobbyBeginRun(StartRunLobby __instance)
+        => SendHostValue(__instance?.NetService, "StartRunLobby begin-run");
+
+    public static void Prefix_LoadRunLobbyBeginRun(LoadRunLobby __instance)
+        => SendHostValue(__instance?.NetService, "LoadRunLobby begin-run");
+
+    /// <summary>
+    /// Client side of run start. Vanilla, so it fires whatever version the host runs — which is
+    /// exactly why the multiplayer flag comes from here and not from our own message.
+    /// </summary>
+    public static void Prefix_ClientBeginRun() => MarkMultiplayerRun();
+
+    /// <summary>Run teardown. The only place per-run state is cleared.</summary>
+    public static void Postfix_RunLobbyDispose()
+    {
+        LogSink(LogLevel.Info, "[DifficultySync] Run lobby disposed — clearing synced state.");
+        Reset();
+    }
+
     public static void Apply(Harmony harmony)
     {
         TryPatch(harmony, AccessTools.Method(typeof(NetMessageBus), "SendMessageToAllHandlers",
                      new[] { typeof(INetMessage), typeof(ulong) }),
                  nameof(Prefix_SendMessageToAllHandlers), prefix: true,
                  "NetMessageBus.SendMessageToAllHandlers (receive host difficulty value)");
+
+        // Host: broadcast before the vanilla begin-run message goes out.
+        TryPatch(harmony, AccessTools.Method(typeof(StartRunLobby), "BeginRunForAllPlayers"),
+                 nameof(Prefix_StartRunLobbyBeginRun), prefix: true,
+                 "StartRunLobby.BeginRunForAllPlayers (broadcast difficulty value)");
+        TryPatch(harmony, AccessTools.Method(typeof(StartRunLobby), "BeginRunLocally"),
+                 nameof(Prefix_StartRunLobbyBeginRun), prefix: true,
+                 "StartRunLobby.BeginRunLocally (broadcast difficulty value)");
+        TryPatch(harmony, AccessTools.Method(typeof(LoadRunLobby), "TryBeginRunForAllPlayers"),
+                 nameof(Prefix_LoadRunLobbyBeginRun), prefix: true,
+                 "LoadRunLobby.TryBeginRunForAllPlayers (broadcast difficulty value, saved run)");
+        TryPatch(harmony, AccessTools.Method(typeof(LoadRunLobby), "BeginRunLocally"),
+                 nameof(Prefix_LoadRunLobbyBeginRun), prefix: true,
+                 "LoadRunLobby.BeginRunLocally (broadcast difficulty value, saved run)");
+
+        // Client: vanilla seams, so these fire regardless of the host's mod version.
+        TryPatch(harmony, AccessTools.Method(typeof(StartRunLobby), "HandleLobbyBeginRunMessage"),
+                 nameof(Prefix_ClientBeginRun), prefix: true,
+                 "StartRunLobby.HandleLobbyBeginRunMessage (detect multiplayer run)");
+        TryPatch(harmony, AccessTools.Method(typeof(LoadRunLobby), "HandleLobbyBeginRunMessage"),
+                 nameof(Prefix_ClientBeginRun), prefix: true,
+                 "LoadRunLobby.HandleLobbyBeginRunMessage (detect multiplayer run, saved run)");
+
+        // Teardown.
+        TryPatch(harmony, AccessTools.Method(typeof(RunLobby), "Dispose"),
+                 nameof(Postfix_RunLobbyDispose), prefix: false,
+                 "RunLobby.Dispose (clear synced state)");
     }
 
     /// <summary>

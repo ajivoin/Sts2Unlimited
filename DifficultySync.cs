@@ -211,6 +211,57 @@ public static class DifficultySync
     /// </summary>
     public static void Prefix_ClientBeginRun() => MarkMultiplayerRun();
 
+    private static readonly FieldInfo _runLobbyNetService =
+        AccessTools.Field(typeof(RunLobby), "_netService");
+
+    /// <summary>
+    /// A rejoining peer missed the run-start broadcast, so the host re-sends to that peer alone.
+    /// Without this, the rejoiner scales the next ToughEgg.Hatch or TestSubject.Revive by a
+    /// different player count and the run diverges mid-combat.
+    ///
+    /// RunLobby is the in-run lobby and keeps its service in a private field, unlike the two
+    /// pre-run lobbies which expose a public NetService property.
+    /// </summary>
+    public static void Postfix_RunLobbyRejoin(RunLobby __instance, ulong senderId)
+    {
+        if (__instance == null) return;
+
+        var netService = _runLobbyNetService?.GetValue(__instance) as INetGameService;
+        if (netService == null)
+        {
+            LogSink(LogLevel.Warn,
+                "[DifficultySync] Rejoin: could not reach RunLobby's net service, so the " +
+                "rejoining peer was not sent the host's difficulty value and may diverge.");
+            return;
+        }
+
+        // Defence in depth, mirroring the run-start gate. ClientRejoinRequestMessage has
+        // ShouldBroadcast = false, so today only the host handles it and this check never fires —
+        // but a future game build that broadcast it would otherwise have every client answer the
+        // rejoiner with its own local value, which is the clobbering bug the run-start gate exists
+        // to prevent. Cheap insurance against a one-line change in somebody else's code.
+        if (netService.Type != NetGameType.Host) return;
+
+        // Send the value THIS RUN is actually using, not a freshly resolved one: the latch is the
+        // authoritative number every other peer already has. These coincide today because settings
+        // are locked while a run is in progress, but re-resolving would silently hand a rejoiner a
+        // different number if that ever stopped being true.
+        int value = TryGetHostEffectiveCount(out int latched)
+            ? latched
+            : ResolveLocalOverrideForBroadcast(LocalOverrideEnabled(), LocalPlayersOverride());
+
+        try
+        {
+            netService.SendMessage(new DifficultySyncMessage(value), senderId);
+            LogSink(LogLevel.Info,
+                $"[DifficultySync] Rejoin: re-sent difficulty value {value} to peer {senderId}.");
+        }
+        catch (Exception e)
+        {
+            LogSink(LogLevel.Warn, $"[DifficultySync] Rejoin: re-send to {senderId} failed: {e.Message}");
+        }
+    }
+
     /// <summary>Run teardown. The only place per-run state is cleared.</summary>
     public static void Postfix_RunLobbyDispose()
     {
@@ -246,6 +297,10 @@ public static class DifficultySync
         TryPatch(harmony, AccessTools.Method(typeof(LoadRunLobby), "HandleLobbyBeginRunMessage"),
                  nameof(Prefix_ClientBeginRun), prefix: true,
                  "LoadRunLobby.HandleLobbyBeginRunMessage (detect multiplayer run, saved run)");
+
+        TryPatch(harmony, AccessTools.Method(typeof(RunLobby), "HandleClientRejoinRequestMessage"),
+                 nameof(Postfix_RunLobbyRejoin), prefix: false,
+                 "RunLobby.HandleClientRejoinRequestMessage (re-send difficulty value on rejoin)");
 
         // Teardown.
         TryPatch(harmony, AccessTools.Method(typeof(RunLobby), "Dispose"),

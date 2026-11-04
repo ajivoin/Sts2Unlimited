@@ -1194,12 +1194,16 @@ Difficulty Scaling values, their monsters differ and the run dies with a State
 Divergence at the first fight.
 
 The host's value is therefore authoritative for the whole lobby. It is broadcast at run
-start (and re-sent to anyone who rejoins) as `DifficultySyncMessage`; a non-host's own
-slider has no effect on a multiplayer run, and Settings shows the host's value instead.
+start (and re-sent to anyone who rejoins) as `DifficultySyncMessage`, so a non-host's own
+slider has no effect on a multiplayer run. When the host has an override active, Settings
+shows the host's value in place of yours and greys the row out. When the host has no
+override, everyone scales by the real player count — your own slider stays visible but
+still does nothing.
 
-If no host value arrives — the host is running a version older than this one — the run
-scales by the actual player count and logs a warning rather than silently using a local
-value that nobody else shares.
+If no host value arrives, the run scales by the actual player count and logs a warning
+rather than silently using a local value nobody else shares. Usually that means the host
+is running a version older than this one; it can also mean the sync message was rejected,
+which is logged separately.
 ```
 
 - [ ] **Step 3: Add the same note, shorter, to MOD_README.md**
@@ -1225,7 +1229,7 @@ and replace `changeNote` with:
 ```
 Fixes a State Divergence disconnect when players had different Difficulty Scaling values.
 
-Monster HP and block are worked out separately on each PC and then checksummed, so two players with different difficulty values built different monsters and the game dropped the whole lobby at the first fight. The host's value is now authoritative: it is sent to everyone at run start and re-sent to anyone who rejoins, a non-host's own slider no longer affects multiplayer, and Settings shows the host's value while a run is live.
+Monster HP and block are worked out separately on each PC and then checksummed, so two players with different difficulty values built different monsters and the game dropped the whole lobby at the first fight. The host's value is now authoritative: it is sent to everyone at run start and re-sent to anyone who rejoins, and a non-host's own slider no longer affects multiplayer. While a run is live, Settings shows the host's value in place of your own whenever the host has an override active.
 
 Everyone should be on this version — a host running an older one cannot send its value, and those runs fall back to scaling by the actual player count with a warning in the log.
 ```

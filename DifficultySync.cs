@@ -215,6 +215,35 @@ public static class DifficultySync
         AccessTools.Field(typeof(RunLobby), "_netService");
 
     /// <summary>
+    /// Decides whether to answer a rejoin and with what value — pure, parameterised by the role
+    /// enum rather than the service, so both mandated rules below are unit-testable. Reading
+    /// <c>netService.Type</c> needs an instance; deciding on the resulting enum does not, and
+    /// <see cref="TryBeginHostBroadcast"/> is the same extraction one layer up.
+    ///
+    /// Rule 1 — only a host answers. Defence in depth, mirroring the run-start gate.
+    /// ClientRejoinRequestMessage has ShouldBroadcast = false, so today only the host handles it and
+    /// this check never fires. A future game build that broadcast it would otherwise have every
+    /// client answer the rejoiner with its own local value — the clobbering bug the run-start gate
+    /// exists to prevent.
+    ///
+    /// Rule 2 — re-send the value THIS RUN is using, not a freshly resolved one: the latch holds the
+    /// authoritative number every other peer already has. The two coincide today because settings
+    /// are locked while a run is in progress, but re-resolving would silently hand a rejoiner a
+    /// different number if that ever stopped being true.
+    /// </summary>
+    internal static bool TryBuildRejoinResend(NetGameType type, out int value)
+    {
+        value = DifficultySyncMessage.NoOverride;
+
+        if (type != NetGameType.Host) return false;
+
+        value = TryGetHostEffectiveCount(out int latched)
+            ? latched
+            : ResolveLocalOverrideForBroadcast(LocalOverrideEnabled(), LocalPlayersOverride());
+        return true;
+    }
+
+    /// <summary>
     /// A rejoining peer missed the run-start broadcast, so the host re-sends to that peer alone.
     /// Without this, the rejoiner scales the next ToughEgg.Hatch or TestSubject.Revive by a
     /// different player count and the run diverges mid-combat.
@@ -235,20 +264,7 @@ public static class DifficultySync
             return;
         }
 
-        // Defence in depth, mirroring the run-start gate. ClientRejoinRequestMessage has
-        // ShouldBroadcast = false, so today only the host handles it and this check never fires —
-        // but a future game build that broadcast it would otherwise have every client answer the
-        // rejoiner with its own local value, which is the clobbering bug the run-start gate exists
-        // to prevent. Cheap insurance against a one-line change in somebody else's code.
-        if (netService.Type != NetGameType.Host) return;
-
-        // Send the value THIS RUN is actually using, not a freshly resolved one: the latch is the
-        // authoritative number every other peer already has. These coincide today because settings
-        // are locked while a run is in progress, but re-resolving would silently hand a rejoiner a
-        // different number if that ever stopped being true.
-        int value = TryGetHostEffectiveCount(out int latched)
-            ? latched
-            : ResolveLocalOverrideForBroadcast(LocalOverrideEnabled(), LocalPlayersOverride());
+        if (!TryBuildRejoinResend(netService.Type, out int value)) return;
 
         try
         {

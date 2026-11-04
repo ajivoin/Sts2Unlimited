@@ -52,6 +52,7 @@ internal static class Tests
         ReceivingHostValue();
         SyncPatchTargetsResolve();
         RejoinPostfixNullInstanceIsHarmless();
+        RejoinResendDecisionTable();
         HostBroadcastRoleGate();
 
         Console.WriteLine(_failures == 0 ? "\nALL TESTS PASSED" : $"\n{_failures} TEST(S) FAILED");
@@ -549,9 +550,61 @@ internal static class Tests
             Check("rejoin postfix with a null instance does not throw", false, e.Message);
         }
         AreEqual("rejoin postfix with a null instance logs nothing", 0, captured.Count);
-        Check("rejoin postfix with a null instance leaves the latch untouched",
-            DifficultySync.TryGetHostEffectiveCount(out int kept));
-        AreEqual("latch value is unchanged", 6, kept);
+        Check("rejoin postfix with a null instance leaves the latch unchanged",
+            DifficultySync.TryGetHostEffectiveCount(out int kept) && kept == 6);
+    }
+
+    // The rejoin decision, extracted as a pure function of the role enum so it is testable without
+    // a live INetGameService (reaching _netService and calling SendMessage stay true I/O and are
+    // covered only by RejoinPostfixNullInstanceIsHarmless's null-instance path). Mirrors
+    // HostBroadcastRoleGate one layer up.
+    private static void RejoinResendDecisionTable()
+    {
+        var captured = new List<string>();
+        DifficultySync.LogSink = (level, message) => captured.Add($"{level}: {message}");
+
+        // Host with a value latched: the latch wins even though the local settings disagree —
+        // this is the assertion that proves Rule 2, so the two numbers must differ.
+        DifficultySync.Reset();
+        DifficultySync.Latch(6, "host");
+        DifficultySync.LocalOverrideEnabled = () => true;
+        DifficultySync.LocalPlayersOverride = () => 9;
+        Check("host with a latch answers", DifficultySync.TryBuildRejoinResend(NetGameType.Host, out int latchedValue));
+        AreEqual("host with a latch yields the latched value, not the local setting", 6, latchedValue);
+
+        // Host with nothing latched: falls back to the resolved local value.
+        DifficultySync.Reset();
+        DifficultySync.LocalOverrideEnabled = () => true;
+        DifficultySync.LocalPlayersOverride = () => 9;
+        Check("host with no latch answers", DifficultySync.TryBuildRejoinResend(NetGameType.Host, out int fallbackValue));
+        AreEqual("host with no latch yields the resolved local override", 9, fallbackValue);
+
+        // Host with nothing latched and the override disabled: yields NoOverride.
+        DifficultySync.Reset();
+        DifficultySync.LocalOverrideEnabled = () => false;
+        DifficultySync.LocalPlayersOverride = () => 9;
+        Check("host with no latch, override disabled, answers",
+            DifficultySync.TryBuildRejoinResend(NetGameType.Host, out int noOverrideValue));
+        AreEqual("host with no latch and no override yields NoOverride",
+            DifficultySyncMessage.NoOverride, noOverrideValue);
+
+        // A client must not answer, and must not disturb the latch.
+        DifficultySync.Reset();
+        DifficultySync.Latch(6, "host");
+        Check("client does not answer a rejoin",
+            !DifficultySync.TryBuildRejoinResend(NetGameType.Client, out _));
+        Check("client leaves the latch untouched",
+            DifficultySync.TryGetHostEffectiveCount(out int keptForClient) && keptForClient == 6);
+
+        // Singleplayer and replay must not answer either.
+        DifficultySync.Reset();
+        Check("singleplayer does not answer a rejoin",
+            !DifficultySync.TryBuildRejoinResend(NetGameType.Singleplayer, out _));
+        Check("replay does not answer a rejoin",
+            !DifficultySync.TryBuildRejoinResend(NetGameType.Replay, out _));
+
+        DifficultySync.LocalOverrideEnabled = () => false;
+        DifficultySync.LocalPlayersOverride = () => 0;
     }
 
     // Guards the Finding-1 fix: StartRunLobby.BeginRunLocally is reached from BOTH the host path

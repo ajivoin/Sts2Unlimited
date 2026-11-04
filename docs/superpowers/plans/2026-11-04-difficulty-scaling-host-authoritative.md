@@ -23,7 +23,8 @@
 - **`0` is the "host has no override" value** for `effectiveCount`, everywhere, with no second boolean.
 - Branch: `fix/difficulty-sync-host-authoritative` (already created). Conventional commits — CI derives the version bump from them, so do **not** hand-edit `Sts2Unlimited.json`.
 - Mod build check: `dotnet build --configuration ExportRelease` from the repo root.
-- Test command: `dotnet run --project tests/PatchTests`. The baseline is green (23 assertions) before this work starts; it must stay green.
+- Test command: `dotnet run --project tests/PatchTests`. The baseline is green at **58 assertions** before this work starts; it must stay green and only grow.
+- `dotnet build --configuration ExportRelease` needs a `sts2unlimited.maxplayers.txt` at the repo root (the `BundleRelease` target copies it). It is gitignored and absent from a fresh worktree — create a local placeholder if the build complains, and never commit it: it leaks local values into releases.
 - `sts2.dll`, `Sentry.dll` and `Sentry.Godot.dll` are gitignored at the repo root and are already present in this worktree. `sts2.dll` is 9757184 bytes, md5 `a91f9e7be785f504205313f3aff55854`.
 - **Environment note:** in this worktree a user hook rewrites `git add`/`git commit` to `rtk git …`, which the worktree-isolation guard then refuses. `git stage -A` passes through. If a commit step is refused, stage the files and ask the user to run the commit with `! git commit …`.
 
@@ -226,7 +227,13 @@ The pure logic: what count does a given peer scale by? This is where the bug is 
   - `public static bool TryGetHostEffectiveCount(out int count)`
   - `public static int Resolve(int actualCount, bool overrideEnabled, int playersOverride, bool scaleSingleplayerEnabled)` — the whole decision as a pure function
   - `public static int ResolveLocalOverrideForBroadcast(bool overrideEnabled, int playersOverride)`
+  - `internal static Func<bool> LocalOverrideEnabled` and `internal static Func<int> LocalPlayersOverride` — defaulted providers, wired to `Sts2Unlimited`'s settings at mod load in Task 3
   - `public static void Reset()`
+
+**Why the providers exist.** The send seams in Tasks 4–5 need the local settings, but
+`DifficultySync.cs` is compiled into the headless harness and `Sts2Unlimited.cs` is not — reading
+`Sts2Unlimited.DifficultyOverrideEnabled` from here would force the harness to compile the
+Godot-dependent half of the mod and break its build. Same indirection as `LogSink`, same reason.
 
 **Why the rule is a pure function taking its inputs.** The obvious shape would be for
 `DifficultySync` to read `Sts2Unlimited.DifficultyOverrideEnabled` itself. Don't: the harness
@@ -346,6 +353,13 @@ public static class DifficultySync
     /// </summary>
     internal static Action<LogLevel, string> LogSink =
         (level, message) => Log.LogMessage(level, LogType.Generic, message);
+
+    /// <summary>
+    /// The local difficulty settings, injected rather than read directly: this file is compiled
+    /// into the headless test harness and Sts2Unlimited.cs is not. Wired at mod load.
+    /// </summary>
+    internal static Func<bool> LocalOverrideEnabled = () => false;
+    internal static Func<int>  LocalPlayersOverride = () => 0;
 
     private static int? _hostEffectiveCount;
     private static bool _isMultiplayerRun;
@@ -636,6 +650,10 @@ Add `using System.Reflection;` to the file's usings for `MethodBase` and `Bindin
 In `Sts2Unlimited.cs`, in `ApplyHarmonyPatches`, immediately after the existing `DifficultyPatch.Apply(harmony);` line, add:
 
 ```csharp
+			// DifficultySync is compiled into the headless harness, which does not compile this
+			// file — so it reads the local settings through providers rather than directly.
+			DifficultySync.LocalOverrideEnabled = () => DifficultyOverrideEnabled;
+			DifficultySync.LocalPlayersOverride = () => DifficultyPlayersOverride;
 			DifficultySync.Apply(harmony);
 ```
 
@@ -693,7 +711,7 @@ Add to `DifficultySync.cs`, and extend its usings with `using MegaCrit.Sts2.Core
         MarkMultiplayerRun();
 
         int value = ResolveLocalOverrideForBroadcast(
-            Sts2Unlimited.DifficultyOverrideEnabled, Sts2Unlimited.DifficultyPlayersOverride);
+            LocalOverrideEnabled(), LocalPlayersOverride());
         Latch(value, "local host");
 
         if (netService == null)
@@ -842,7 +860,7 @@ Add to `DifficultySync.cs`:
         }
 
         int value = ResolveLocalOverrideForBroadcast(
-            Sts2Unlimited.DifficultyOverrideEnabled, Sts2Unlimited.DifficultyPlayersOverride);
+            LocalOverrideEnabled(), LocalPlayersOverride());
 
         try
         {

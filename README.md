@@ -76,6 +76,21 @@ header regardless of which version any client has installed.
 
 Settings are persisted to `sts2unlimited.settings.json` via the game's own settings API, with fallback to the legacy text file.
 
+### Difficulty scaling in multiplayer
+
+Monster HP and block are not replicated — every peer computes them locally from the
+player count and the game then compares checksums. So if two players use different
+Difficulty Scaling values, their monsters differ and the run dies with a State
+Divergence at the first fight.
+
+The host's value is therefore authoritative for the whole lobby. It is broadcast at run
+start (and re-sent to anyone who rejoins) as `DifficultySyncMessage`; a non-host's own
+slider has no effect on a multiplayer run, and Settings shows the host's value instead.
+
+If no host value arrives — the host is running a version older than this one — the run
+scales by the actual player count and logs a warning rather than silently using a local
+value that nobody else shares.
+
 ## Limitations
 
 - UI screens (character select, etc.) may feel crowded with many players
@@ -98,6 +113,8 @@ Output is bundled to `release/` by the `BundleRelease` MSBuild target.
 Sts2Unlimited.cs            — Harmony patches, config loading, entry point
 SettingsMenuIntegration.cs  — Injects the Max Players and difficulty rows into Settings
 DifficultyPatch.cs          — Scales monster HP, block and damage to the player count
+DifficultySyncMessage.cs    — Wire contract carrying the host's difficulty value to peers
+DifficultySync.cs           — Makes the host's difficulty value authoritative in multiplayer
 PacketSizePatch.cs          — Transpiles the lobby player-list header to a fixed 5-bit width
 ListHeaderWidthPatch.cs     — Enforces that width at WriteList/ReadList, which never inline
 CampfirePatch.cs            — Keeps rest-site scene slots bounds-safe past the 4 in the scene

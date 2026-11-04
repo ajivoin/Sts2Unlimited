@@ -51,6 +51,7 @@ internal static class Tests
         HpFormulaStillMatchesTheBugReport();
         ReceivingHostValue();
         SyncPatchTargetsResolve();
+        RejoinPostfixNullInstanceIsHarmless();
         HostBroadcastRoleGate();
 
         Console.WriteLine(_failures == 0 ? "\nALL TESTS PASSED" : $"\n{_failures} TEST(S) FAILED");
@@ -524,6 +525,33 @@ internal static class Tests
             AccessTools.Field(typeof(RunLobby), "_netService") != null);
         Check("RunLobby.Dispose resolves",
             AccessTools.Method(typeof(RunLobby), "Dispose") != null);
+    }
+
+    // The postfix's null-conditional guard: a null RunLobby instance (mirroring the
+    // __instance?.NetService pattern used elsewhere) must degrade gracefully — no throw, no log,
+    // no touch of the latch. Everything past the null check needs a real INetGameService, whose
+    // event members reference types this harness cannot load, so that part is untestable here.
+    private static void RejoinPostfixNullInstanceIsHarmless()
+    {
+        var captured = new List<string>();
+        DifficultySync.LogSink = (level, message) => captured.Add($"{level}: {message}");
+
+        DifficultySync.Reset();
+        DifficultySync.Latch(6, "test");
+        captured.Clear(); // Latch() itself logs; only count what the postfix call adds.
+        try
+        {
+            DifficultySync.Postfix_RunLobbyRejoin(null, 42UL);
+            Check("rejoin postfix with a null instance does not throw", true);
+        }
+        catch (Exception e)
+        {
+            Check("rejoin postfix with a null instance does not throw", false, e.Message);
+        }
+        AreEqual("rejoin postfix with a null instance logs nothing", 0, captured.Count);
+        Check("rejoin postfix with a null instance leaves the latch untouched",
+            DifficultySync.TryGetHostEffectiveCount(out int kept));
+        AreEqual("latch value is unchanged", 6, kept);
     }
 
     // Guards the Finding-1 fix: StartRunLobby.BeginRunLocally is reached from BOTH the host path

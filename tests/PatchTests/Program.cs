@@ -7,6 +7,7 @@ using System.Reflection.Emit;
 using System.IO;
 using System.Text.RegularExpressions;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Multiplayer.Messages.Lobby;
 using MegaCrit.Sts2.Core.Multiplayer.Serialization;
@@ -43,6 +44,8 @@ internal static class Tests
         GuardWidensVanillaWidthCalls();
         GuardWarnsWhenThereIsNothingToGuard();
         DifficultySyncMessageRoundTrips();
+        DifficultyDecisionTable();
+        HpFormulaStillMatchesTheBugReport();
 
         Console.WriteLine(_failures == 0 ? "\nALL TESTS PASSED" : $"\n{_failures} TEST(S) FAILED");
         return _failures == 0 ? 0 : 1;
@@ -374,6 +377,78 @@ internal static class Tests
         rejected.Deserialize(foreignReader);
 
         Check("a foreign sentinel is not valid", !rejected.IsValid);
+    }
+
+    // The whole fix in one table. Each row is a peer deciding what to scale by.
+    private static void DifficultyDecisionTable()
+    {
+        var captured = new List<string>();
+        DifficultySync.LogSink = (level, message) => captured.Add($"{level}: {message}");
+
+        // Singleplayer is untouched by any of this.
+        DifficultySync.Reset();
+        AreEqual("solo, override on, sp-scaling off -> actual", 1,
+            DifficultySync.Resolve(1, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: false));
+        AreEqual("solo, override on, sp-scaling on -> override", 9,
+            DifficultySync.Resolve(1, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: true));
+        AreEqual("solo, override off -> actual", 1,
+            DifficultySync.Resolve(1, overrideEnabled: false, playersOverride: 9, scaleSingleplayerEnabled: true));
+
+        // Multiplayer with the host's value latched: the host's number wins, whatever ours says.
+        DifficultySync.Reset();
+        DifficultySync.MarkMultiplayerRun();
+        DifficultySync.Latch(6, "test");
+        AreEqual("mp, host says 6, we want 9 -> 6", 6,
+            DifficultySync.Resolve(3, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: false));
+
+        // Host with no override: everyone scales by the real count, even peers who have one.
+        DifficultySync.Reset();
+        DifficultySync.MarkMultiplayerRun();
+        DifficultySync.Latch(DifficultySyncMessage.NoOverride, "test");
+        AreEqual("mp, host has no override -> actual", 3,
+            DifficultySync.Resolve(3, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: false));
+
+        // Nothing latched (old-version host): fall back to the real count and say so once.
+        DifficultySync.Reset();
+        DifficultySync.MarkMultiplayerRun();
+        captured.Clear();
+        AreEqual("mp, unsynced -> actual", 3,
+            DifficultySync.Resolve(3, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: false));
+        AreEqual("mp, unsynced -> actual again", 3,
+            DifficultySync.Resolve(3, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: false));
+        AreEqual("unsynced warns exactly once", 1, captured.Count(l => l.StartsWith("Warn")));
+
+        // A latch arriving before the client's begin-run seam must survive it.
+        DifficultySync.Reset();
+        DifficultySync.Latch(6, "test");
+        DifficultySync.MarkMultiplayerRun();
+        AreEqual("latch survives MarkMultiplayerRun", 6,
+            DifficultySync.Resolve(3, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: false));
+
+        // What the host puts on the wire.
+        AreEqual("broadcast value with override on", 6,
+            DifficultySync.ResolveLocalOverrideForBroadcast(overrideEnabled: true, playersOverride: 6));
+        AreEqual("broadcast value with override off", DifficultySyncMessage.NoOverride,
+            DifficultySync.ResolveLocalOverrideForBroadcast(overrideEnabled: false, playersOverride: 6));
+
+        // Teardown clears everything, so the next run cannot inherit a stale value.
+        DifficultySync.Reset();
+        Check("reset clears the latch", !DifficultySync.TryGetHostEffectiveCount(out _));
+        Check("reset clears the multiplayer flag", !DifficultySync.IsMultiplayerRun);
+    }
+
+    // Characterises the real game formula against the numbers in the bug report, so a future
+    // game build that changes the scaling maths fails here loudly instead of silently making
+    // the spec's arithmetic wrong. Base HP 39 is in ShrinkerBeetle's 38-40 roll; act index 0
+    // scales by 1.1; SetMaxHpInternal truncates.
+    private static void HpFormulaStillMatchesTheBugReport()
+    {
+        AreEqual("reporter's Local HP (4 players)", 171,
+            (int)Creature.ScaleHpForMultiplayer(39m, null, 4, 0));
+        AreEqual("reporter's Remote HP (5 players)", 214,
+            (int)Creature.ScaleHpForMultiplayer(39m, null, 5, 0));
+        AreEqual("one player short-circuits unscaled", 39,
+            (int)Creature.ScaleHpForMultiplayer(39m, null, 1, 0));
     }
 
     // Drives the leaves by reflection so no test names the element type.

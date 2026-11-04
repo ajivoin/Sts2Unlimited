@@ -32,12 +32,12 @@ public static class Sts2Unlimited
 	public static int  DifficultyPlayersOverride  { get => difficultyPlayersOverride; set => difficultyPlayersOverride = value; }
 	public static bool DifficultyScaleSingleplayerEnabled { get => difficultyScaleSingleplayerEnabled; set => difficultyScaleSingleplayerEnabled = value; }
 
+	// In a multiplayer run the host's value is authoritative for every peer: monster HP and
+	// block are derived locally and then checksummed, so a per-client value desyncs the run.
+	// Singleplayer keeps the local setting, including the challenge-mode toggle.
 	public static int GetEffectivePlayerCount(int actualCount)
-	{
-		if (!DifficultyOverrideEnabled) return actualCount;
-		if (actualCount == 1 && !DifficultyScaleSingleplayerEnabled) return actualCount;
-		return DifficultyPlayersOverride;
-	}
+		=> DifficultySync.Resolve(actualCount, DifficultyOverrideEnabled,
+			DifficultyPlayersOverride, DifficultyScaleSingleplayerEnabled);
 
 	public static void ModLoaded()
 	{

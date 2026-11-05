@@ -33,8 +33,11 @@ internal static class Tests
 
     private static int Main()
     {
-        // The game's logger segfaults outside a game process; capture instead.
+        // The game's logger segfaults outside a game process; capture instead. Both sinks are
+        // set here, up front, so no test depends on running after one that happens to set the
+        // other first, and no test can ever reach the real logger by omission.
         ListHeaderWidthPatch.LogSink = (level, message) => _log.Add($"{level}: {message}");
+        DifficultySync.LogSink = (level, message) => _log.Add($"{level}: {message}");
 
         RequiredBitsMath();
         TranspilerRewritesRealGameIl();
@@ -54,6 +57,7 @@ internal static class Tests
         RejoinPostfixNullInstanceIsHarmless();
         RejoinResendDecisionTable();
         HostBroadcastRoleGate();
+        LobbyEntryClearsStaleLatch();
 
         Console.WriteLine(_failures == 0 ? "\nALL TESTS PASSED" : $"\n{_failures} TEST(S) FAILED");
         return _failures == 0 ? 0 : 1;
@@ -409,6 +413,53 @@ internal static class Tests
         AreEqual("mp, host says 6, we want 9 -> 6", 6,
             DifficultySync.Resolve(3, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: false));
 
+        // The multiplayer branch ignores the LOCAL override toggle — the host's latch wins
+        // regardless of whether THIS peer has an override enabled. Without this row, a future
+        // change that gated ResolveForMultiplayer on the local overrideEnabled flag would pass
+        // every other assertion here.
+        DifficultySync.Reset();
+        DifficultySync.MarkMultiplayerRun();
+        DifficultySync.Latch(6, "test");
+        AreEqual("mp, host says 6, local override off -> 6", 6,
+            DifficultySync.Resolve(3, overrideEnabled: false, playersOverride: 9, scaleSingleplayerEnabled: false));
+
+        // A hosted run with exactly one player (RunState.Players has one entry) must still honour
+        // the local singleplayer-scaling toggle, the same as true singleplayer. This is the
+        // regression guard for the Finding-1 fix: ResolveForMultiplayer must short-circuit on
+        // actualCount == 1 before ever consulting the latch.
+        DifficultySync.Reset();
+        DifficultySync.MarkMultiplayerRun();
+        DifficultySync.Latch(9, "test");
+        AreEqual("mp, host says 9, actual 1, sp-scaling off -> actual (1)", 1,
+            DifficultySync.Resolve(1, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: false));
+
+        DifficultySync.Reset();
+        DifficultySync.MarkMultiplayerRun();
+        DifficultySync.Latch(9, "test");
+        AreEqual("mp, host says 9, actual 1, sp-scaling on -> 9", 9,
+            DifficultySync.Resolve(1, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: true));
+
+        // The existing multi-player rows above (actualCount 3) must be unaffected by the new
+        // actualCount == 1 short-circuit — re-asserted here explicitly.
+        DifficultySync.Reset();
+        DifficultySync.MarkMultiplayerRun();
+        DifficultySync.Latch(9, "test");
+        AreEqual("mp, host says 9, actual 3, sp-scaling off -> 9 (unchanged)", 9,
+            DifficultySync.Resolve(3, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: false));
+
+        // The short-circuit must sit before the latch check AND before the unsynced-warning
+        // path: a solo hosted run with nothing latched yet must neither consume the latch nor
+        // emit the "unsynced" warning.
+        DifficultySync.Reset();
+        DifficultySync.MarkMultiplayerRun();
+        captured.Clear();
+        AreEqual("mp, unsynced, actual 1, sp-scaling off -> actual (1)", 1,
+            DifficultySync.Resolve(1, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: false));
+        AreEqual("solo hosted run with nothing latched does not warn", 0,
+            captured.Count(l => l.StartsWith("Warn")));
+        Check("solo hosted run with nothing latched does not mark unsynced",
+            !DifficultySync.TryGetHostEffectiveCount(out _));
+
         // Host with no override: everyone scales by the real count, even peers who have one.
         DifficultySync.Reset();
         DifficultySync.MarkMultiplayerRun();
@@ -425,6 +476,17 @@ internal static class Tests
         AreEqual("mp, unsynced -> actual again", 3,
             DifficultySync.Resolve(3, overrideEnabled: true, playersOverride: 9, scaleSingleplayerEnabled: false));
         AreEqual("unsynced warns exactly once", 1, captured.Count(l => l.StartsWith("Warn")));
+
+        // A latch arriving AFTER the fallback already scaled a monster is a real divergence and
+        // must be just as loud: a plain Info "latched" line here would bury the one signal that
+        // tells a user from their log that this specific run may have diverged.
+        DifficultySync.Latch(6, "late host");
+        AreEqual("a late latch warns too", 2, captured.Count(l => l.StartsWith("Warn")));
+        var warnsInOrder = captured.Where(l => l.StartsWith("Warn")).ToList();
+        Check("the unsynced warning precedes the late-latch warning",
+            warnsInOrder.Count == 2 &&
+            warnsInOrder[0].Contains("No difficulty value received") &&
+            warnsInOrder[1].Contains("latched late"));
 
         // ...but the next run must warn again, so Reset() has to clear the once-only flag.
         // Without this case, deleting `_warnedUnsynced = false` from Reset() passes every assertion.
@@ -468,7 +530,6 @@ internal static class Tests
             (int)Creature.ScaleHpForMultiplayer(39m, null, 1, 0));
     }
 
-    // Drives the leaves by reflection so no test names the element type.
     // The receive path, driven directly: a valid message latches, a foreign one is dropped and
     // reported, and an unrelated game message is ignored without noise.
     private static void ReceivingHostValue()
@@ -494,6 +555,26 @@ internal static class Tests
         DifficultySync.Prefix_SendMessageToAllHandlers(new LobbySeedChangedMessage(), 42UL);
         Check("an unrelated message does not latch", !DifficultySync.TryGetHostEffectiveCount(out _));
         AreEqual("an unrelated message logs nothing", 0, captured.Count);
+
+        // A peer's message must not be able to overwrite the host's own authoritative value —
+        // the worst-shaped divergence, because every other peer still has the value the host
+        // actually sent. _broadcastThisRun is only set by TryBeginHostBroadcast(Host, ...), so
+        // this exercises the real "we are the host" state, not just a hand-set flag.
+        DifficultySync.Reset();
+        DifficultySync.LocalOverrideEnabled = () => true;
+        DifficultySync.LocalPlayersOverride = () => 6;
+        Check("host broadcasts its own value",
+            DifficultySync.TryBeginHostBroadcast(NetGameType.Host, out int hostValue));
+        AreEqual("host's own value", 6, hostValue);
+        captured.Clear();
+        DifficultySync.Prefix_SendMessageToAllHandlers(new DifficultySyncMessage(9), 99UL);
+        Check("a peer's message does not overwrite the host's own latched value",
+            DifficultySync.TryGetHostEffectiveCount(out int stillHost) && stillHost == 6);
+        AreEqual("rejecting a peer's overwrite attempt warns", 1, captured.Count(l => l.StartsWith("Warn")));
+        Check("the warning names the sender",
+            captured.Any(l => l.StartsWith("Warn") && l.Contains("99")));
+        DifficultySync.LocalOverrideEnabled = () => false;
+        DifficultySync.LocalPlayersOverride = () => 0;
     }
 
     // The patch targets this task and Tasks 4-5 hook, resolved against the real sts2.dll. These
@@ -526,6 +607,15 @@ internal static class Tests
             AccessTools.Field(typeof(RunLobby), "_netService") != null);
         Check("RunLobby.Dispose resolves",
             AccessTools.Method(typeof(RunLobby), "Dispose") != null);
+
+        // AccessTools.Constructor(type) (no parameter list) targets a zero-arg constructor and
+        // silently resolves to System.Object's instead of null when the type has none of its
+        // own — so DifficultySync walks AccessTools.GetDeclaredConstructors(type) and patches
+        // each one. These counts guard that both overloads still exist to patch.
+        AreEqual("StartRunLobby has 2 declared constructors", 2,
+            AccessTools.GetDeclaredConstructors(typeof(StartRunLobby)).Count);
+        AreEqual("LoadRunLobby has 2 declared constructors", 2,
+            AccessTools.GetDeclaredConstructors(typeof(LoadRunLobby)).Count);
     }
 
     // The postfix's null-conditional guard: a null RunLobby instance (mirroring the
@@ -661,6 +751,33 @@ internal static class Tests
         Check("null net service does not mark multiplayer", !DifficultySync.IsMultiplayerRun);
     }
 
+    // Finding-2: a client can latch the host's value at BeginRunForAllPlayers time and then
+    // never reach a RunLobby (host drops, client backs out of the transition), so
+    // Postfix_RunLobbyDispose never fires and nothing clears the latch. Entering the NEXT
+    // pre-run lobby must clear it, since that always precedes any sync message for the new
+    // lobby. Driven directly against the reset entry point rather than through a real
+    // StartRunLobby/LoadRunLobby construction, which needs a live INetGameService.
+    private static void LobbyEntryClearsStaleLatch()
+    {
+        var captured = new List<string>();
+        DifficultySync.LogSink = (level, message) => captured.Add($"{level}: {message}");
+
+        DifficultySync.Reset();
+        DifficultySync.MarkMultiplayerRun();
+        DifficultySync.Latch(6, "stale lobby");
+        Check("a stale latch is in place before lobby entry",
+            DifficultySync.TryGetHostEffectiveCount(out _));
+        Check("the stale run is marked multiplayer before lobby entry", DifficultySync.IsMultiplayerRun);
+
+        captured.Clear();
+        DifficultySync.Postfix_LobbyEntered();
+
+        Check("entering a fresh lobby clears the latch", !DifficultySync.TryGetHostEffectiveCount(out _));
+        Check("entering a fresh lobby clears the multiplayer flag", !DifficultySync.IsMultiplayerRun);
+        Check("entering a fresh lobby logs the clear", captured.Any(l => l.StartsWith("Info")));
+    }
+
+    // Drives the leaves by reflection so no test names the element type.
     private static PacketWriter WriteEmptyList(Type elementType, int lengthBits)
     {
         var writer = new PacketWriter();

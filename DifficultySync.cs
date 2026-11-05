@@ -58,6 +58,21 @@ public static class DifficultySync
     public static void Latch(int effectiveCount, string source)
     {
         _hostEffectiveCount = effectiveCount;
+
+        if (_warnedUnsynced)
+        {
+            // A fallback already scaled at least one monster by the actual player count before
+            // this latch arrived. Every monster scaled before now used the wrong number and
+            // every one scaled after will use this one — a real divergence, not just a late
+            // sync, so this has to be as loud as the warning that preceded it.
+            LogSink(LogLevel.Warn,
+                $"[DifficultySync] Host difficulty value latched late: {effectiveCount} " +
+                $"({(effectiveCount == DifficultySyncMessage.NoOverride ? "no override" : "override")}, " +
+                $"from {source}). This run already scaled at least one monster by the actual player " +
+                $"count before this arrived, so it may diverge.");
+            return;
+        }
+
         LogSink(LogLevel.Info,
             $"[DifficultySync] Host difficulty value latched: {effectiveCount} " +
             $"({(effectiveCount == DifficultySyncMessage.NoOverride ? "no override" : "override")}, from {source}).");
@@ -77,7 +92,7 @@ public static class DifficultySync
     public static int Resolve(int actualCount, bool overrideEnabled, int playersOverride,
                               bool scaleSingleplayerEnabled)
     {
-        if (_isMultiplayerRun) return ResolveForMultiplayer(actualCount);
+        if (_isMultiplayerRun) return ResolveForMultiplayer(actualCount, scaleSingleplayerEnabled);
 
         if (!overrideEnabled) return actualCount;
         if (actualCount == 1 && !scaleSingleplayerEnabled) return actualCount;
@@ -85,8 +100,15 @@ public static class DifficultySync
     }
 
     /// <summary>What this peer scales by during a multiplayer run.</summary>
-    private static int ResolveForMultiplayer(int actualCount)
+    private static int ResolveForMultiplayer(int actualCount, bool scaleSingleplayerEnabled)
     {
+        // actualCount comes from the replicated player list, so all peers agree on it, and
+        // actualCount == 1 means exactly one peer is computing combat state. The local toggle
+        // is that peer's own business — it never reaches another peer, so it cannot diverge.
+        // Checked before the latch (and before the unsynced warning) so a solo hosted run
+        // neither consumes nor warns about either.
+        if (actualCount == 1 && !scaleSingleplayerEnabled) return actualCount;
+
         if (_hostEffectiveCount.HasValue)
         {
             int host = _hostEffectiveCount.Value;
@@ -135,6 +157,19 @@ public static class DifficultySync
                 $"sentinel (0x{sync.Sentinel:X8}) from {senderId}. Mod-added message ids are " +
                 $"positional, so this is most likely another mod's message decoded into ours — " +
                 $"check that every peer has the same mods installed.");
+            return;
+        }
+
+        if (_broadcastThisRun)
+        {
+            // We broadcast this run, which only a true host does (see TryBeginHostBroadcast),
+            // so our own value is already authoritative. A peer is not the host and has no
+            // business overwriting it — accepting this would be host-side divergence, the
+            // worst shape, since every other peer still has the value we actually sent.
+            LogSink(LogLevel.Warn,
+                $"[DifficultySync] Ignored a difficulty-sync message from {senderId}: this peer " +
+                $"already broadcast as host this run, so an inbound value is not authoritative " +
+                $"and was not latched.");
             return;
         }
 
@@ -211,8 +246,34 @@ public static class DifficultySync
     /// </summary>
     public static void Prefix_ClientBeginRun() => MarkMultiplayerRun();
 
-    private static readonly FieldInfo _runLobbyNetService =
-        AccessTools.Field(typeof(RunLobby), "_netService");
+    // Resolved lazily (see Postfix_RunLobbyRejoin) rather than in a static field initializer:
+    // a typeof(RunLobby) reference in an initializer would run as part of this class's static
+    // ctor, so a failed RunLobby type load would throw a TypeInitializationException out of
+    // every later static member access — including Resolve(), called from
+    // DifficultyPatch.Prefix_ScaleHpForMultiplayer, which has no try/catch. That would turn
+    // "RunLobby failed to load" into "runs cannot start," in the one class meant to survive a
+    // game update by logging a warning instead.
+    private static FieldInfo _runLobbyNetService;
+    private static bool _runLobbyNetServiceResolveAttempted;
+
+    private static FieldInfo RunLobbyNetServiceField()
+    {
+        if (!_runLobbyNetServiceResolveAttempted)
+        {
+            _runLobbyNetServiceResolveAttempted = true;
+            try
+            {
+                _runLobbyNetService = AccessTools.Field(typeof(RunLobby), "_netService");
+            }
+            catch (Exception e)
+            {
+                LogSink(LogLevel.Warn,
+                    $"[DifficultySync] Could not resolve RunLobby._netService: {e.Message}");
+            }
+        }
+
+        return _runLobbyNetService;
+    }
 
     /// <summary>
     /// Decides whether to answer a rejoin and with what value — pure, parameterised by the role
@@ -255,7 +316,7 @@ public static class DifficultySync
     {
         if (__instance == null) return;
 
-        var netService = _runLobbyNetService?.GetValue(__instance) as INetGameService;
+        var netService = RunLobbyNetServiceField()?.GetValue(__instance) as INetGameService;
         if (netService == null)
         {
             LogSink(LogLevel.Warn,
@@ -282,6 +343,25 @@ public static class DifficultySync
     public static void Postfix_RunLobbyDispose()
     {
         LogSink(LogLevel.Info, "[DifficultySync] Run lobby disposed — clearing synced state.");
+        Reset();
+    }
+
+    /// <summary>
+    /// Pre-run lobby entry. A client can latch the host's value at BeginRunForAllPlayers time
+    /// and then never reach a RunLobby at all — the host drops, or the client backs out of the
+    /// transition. Postfix_RunLobbyDispose only fires once a RunLobby exists, so nothing clears
+    /// the latch in that case, and it would otherwise leak into whatever lobby this peer joins
+    /// next: MarkMultiplayerRun fires there too, _hostEffectiveCount is still set from the dead
+    /// lobby, and ResolveForMultiplayer applies a value from a different lobby while also
+    /// suppressing the unsynced warning — exactly the silent divergence that fallback exists to
+    /// prevent. Entering a pre-run lobby always precedes any sync message for it, so clearing
+    /// state here cannot drop a latch that belongs to the lobby being entered.
+    /// </summary>
+    public static void Postfix_LobbyEntered()
+    {
+        LogSink(LogLevel.Info,
+            "[DifficultySync] Pre-run lobby entered — clearing any stale sync state from a " +
+            "previous lobby.");
         Reset();
     }
 
@@ -322,6 +402,40 @@ public static class DifficultySync
         TryPatch(harmony, AccessTools.Method(typeof(RunLobby), "Dispose"),
                  nameof(Postfix_RunLobbyDispose), prefix: false,
                  "RunLobby.Dispose (clear synced state)");
+
+        // Pre-run lobby entry: the earliest point that always precedes any sync message for a
+        // given lobby, so it is safe to clear whatever a dead previous lobby left behind.
+        // AccessTools.Constructor(type) with no parameter list targets a zero-arg constructor;
+        // neither StartRunLobby nor LoadRunLobby has one (both have two overloads, all with
+        // several parameters), so that call resolves to System.Object's parameterless
+        // constructor instead of returning null — patching that would postfix *every* object
+        // allocation in the process. Patching each declared constructor of the two lobby types
+        // individually avoids that trap.
+        TryPatchAllConstructors(harmony, typeof(StartRunLobby), nameof(Postfix_LobbyEntered),
+            "StartRunLobby constructor (clear stale sync state on lobby entry)");
+        TryPatchAllConstructors(harmony, typeof(LoadRunLobby), nameof(Postfix_LobbyEntered),
+            "LoadRunLobby constructor (clear stale sync state on lobby entry)");
+    }
+
+    /// <summary>
+    /// Patches every declared constructor of <paramref name="type"/> with a postfix, rather than
+    /// a single resolved constructor — see the comment at the call sites in <see cref="Apply"/>
+    /// for why AccessTools.Constructor(type) alone is not safe for these two types.
+    /// </summary>
+    private static void TryPatchAllConstructors(Harmony harmony, Type type, string patchName,
+                                                 string description)
+    {
+        var ctors = AccessTools.GetDeclaredConstructors(type);
+        if (ctors == null || ctors.Count == 0)
+        {
+            LogSink(LogLevel.Warn, $"[DifficultySync] {description}: no constructors found on " +
+                                    $"{type.Name} — skipping.");
+            return;
+        }
+
+        foreach (var ctor in ctors)
+            TryPatch(harmony, ctor, patchName, prefix: false,
+                $"{description} ({ctor.GetParameters().Length} args)");
     }
 
     /// <summary>

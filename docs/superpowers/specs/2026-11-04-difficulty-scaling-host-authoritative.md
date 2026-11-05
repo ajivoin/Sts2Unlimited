@@ -194,6 +194,11 @@ RunLobby.HandleClientRejoinRequestMessage(ClientRejoinRequestMessage, ulong) // 
 RunLobby.OnConnectedToClientAsHost(ulong)                            // host, peer attached
 ```
 
+`HandleClientRejoinRequestMessage` and `OnConnectedToClientAsHost` exist in the
+assembly but no reachable flow drives them: the game offers no way to rejoin a run in
+progress. Reconnection is the host leaving the run and re-inviting, which is the saved-run
+path. The seams below are listed as they appear in the assembly, not as live entry points.
+
 Three lobby classes, not two, and the distinction matters for the rejoin seam:
 `StartRunLobby` is the pre-run lobby for a fresh run, `LoadRunLobby` the pre-run lobby
 for a saved run, and **`RunLobby` the in-run lobby** — it owns `AbandonRun`,
@@ -243,7 +248,7 @@ apply.
 |---|---|---|
 | Send, new run | prefix `StartRunLobby.BeginRunForAllPlayers` | Host latches its own value and broadcasts via `__instance.NetService.SendMessage(msg)` **before** the vanilla begin-run message, on the same `Reliable` channel, so it is processed first. |
 | Send, saved run | prefix `LoadRunLobby.TryBeginRunForAllPlayers` / `BeginRunLocally` | Same, for loaded runs, which never pass through `StartRunLobby`. |
-| Send, rejoin | postfix `RunLobby.HandleClientRejoinRequestMessage` | Re-send to that peer with `SendMessage(msg, playerId)`. `RunLobby` is the in-run lobby, so this is the seam that keeps a mid-run rejoin from diverging on the next hatch or revive. Its service is the private `_netService` field. |
+| Send, rejoin | postfix `RunLobby.HandleClientRejoinRequestMessage` | Re-send to that peer with `SendMessage(msg, playerId)`. Its service is the private `_netService` field. **Dead code on the current build**, kept as forward compatibility only: `ClientRejoinRequestMessage.ShouldBroadcast` is `false`, and the game has no mid-run rejoin flow at all — a dropped player returns by the host backing out and bringing them back in, which re-enters through `LoadRunLobby` and its begin-run seams. Do not count this seam as covering reconnection. |
 | Receive | prefix `NetMessageBus.SendMessageToAllHandlers` | Sees every inbound message with no service reference and no register/unregister lifecycle to get wrong. |
 
 Also resets the latch when a run ends or the peer disconnects, so a stale value cannot
@@ -330,9 +335,16 @@ Two user-visible signals:
 1. Two peers with *different* local Difficulty Scaling values, host override on,
    complete the first fight with identical monster HP and no State Divergence.
 2. Host with the override **off** and a client with it **on** likewise agree.
-3. A client rejoining mid-run gets the host's value and survives a `ToughEgg.Hatch`
-   or `TestSubject.Revive` without diverging.
-4. A loaded/saved multiplayer run syncs the same way as a fresh one.
+3. The latched value survives a mid-combat rescale — a `ToughEgg.Hatch` or
+   `TestSubject.Revive`, which reach `ScaleHpForMultiplayer` directly rather than the
+   spawn-time `ScaleMonsterHpForMultiplayer`.
+4. A loaded/saved multiplayer run syncs the same way as a fresh one. **This is the
+   priority criterion, not an edge case:** the game has no mid-run rejoin, so the only
+   way a dropped player returns is the host backing out and bringing them back in,
+   which re-enters through `LoadRunLobby`. Every reconnect in the wild takes this path.
+   It cannot be exercised under `-fastmp` — those sessions write synthetic net ids
+   (host 1, client 1001) and `RunManager.CanonicalizeSave` validates against the real
+   platform id, so a `-fastmp` save can never be reloaded. Needs two real Steam peers.
 5. Singleplayer behaviour, including the singleplayer challenge toggle, is unchanged.
 6. An unsynced multiplayer run scales by the actual player count and logs one WARN.
 7. `dotnet run --project tests/PatchTests` passes, including a round-trip test for

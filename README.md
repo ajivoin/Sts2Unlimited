@@ -84,8 +84,9 @@ Difficulty Scaling values, their monsters differ and the run dies with a State
 Divergence at the first fight.
 
 The host's value is therefore authoritative for the whole lobby. It is broadcast at run
-start (and re-sent to anyone who rejoins) as `DifficultySyncMessage`, so a non-host's own
-slider has no effect on a multiplayer run. When the host has an override active, Settings
+start as `DifficultySyncMessage`, so a non-host's own slider has no effect on a
+multiplayer run. The game has no mid-run rejoin — a dropped player returns by the host
+leaving the run and bringing them back in, which re-broadcasts from the saved-run lobby. When the host has an override active, Settings
 shows the host's value in place of yours and greys the row out. When the host has no
 override, everyone scales by the real player count — your own slider stays visible but
 still does nothing.

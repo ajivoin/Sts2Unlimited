@@ -279,9 +279,25 @@ public static class SettingsMenuIntegration
         GD.Print($"[Sts2Unlimited] Difficulty toggle configured: enabled={Sts2Unlimited.DifficultyOverrideEnabled}.");
     }
 
+    // In a multiplayer run the host's value is what the game actually scales by, so show that
+    // and lock the row — see DifficultySync. Falls back to the local setting everywhere else.
     private static void ConfigureDifficultySlider(Node diffSliderRow, int currentDifficulty)
-        => ConfigureSlider(diffSliderRow, "Difficulty Scaling", DIFFICULTY_MIN, DIFFICULTY_MAX, DIFFICULTY_OFFSET, currentDifficulty,
+    {
+        int hostValue = DifficultySyncMessage.NoOverride;
+        bool hostControls = DifficultySync.IsMultiplayerRun
+                         && DifficultySync.TryGetHostEffectiveCount(out hostValue)
+                         && hostValue != DifficultySyncMessage.NoOverride;
+
+        int displayed = hostControls ? hostValue : currentDifficulty;
+        string label  = hostControls ? "Difficulty Scaling (set by host)" : "Difficulty Scaling";
+
+        ConfigureSlider(diffSliderRow, label, DIFFICULTY_MIN, DIFFICULTY_MAX, DIFFICULTY_OFFSET,
+            displayed,
             value => { Sts2Unlimited.DifficultyPlayersOverride = value; SaveSettings(); });
+
+        if (hostControls)
+            LockRow(diffSliderRow, FindSliderControl(diffSliderRow));
+    }
 
     // Shared by the Max Players and Difficulty Scaling rows — both duplicate an NMasterVolumeSlider
     // template and only differ in label text, value range/offset, and what the chosen value gets
@@ -410,7 +426,11 @@ public static class SettingsMenuIntegration
     private static void LockRowIfRunInProgress(Node row, Node interactiveControl)
     {
         if (!IsRunInProgress()) return;
+        LockRow(row, interactiveControl);
+    }
 
+    private static void LockRow(Node row, Node interactiveControl)
+    {
         if (GetStsGray() is Color gray)
             row.Set("modulate", gray); // cascades to Label + control since both are children of row
 
@@ -542,6 +562,32 @@ public static class SettingsMenuIntegration
             if (found != null) return found;
         }
         return null;
+    }
+
+    // ConfigureSlider resolves this internally; the host-controlled lock needs it too.
+    // Reports a failed lookup like every other lookup in this file: returning null silently would
+    // leave the row greyed but still draggable, with nothing in the log to explain it.
+    private static Node FindSliderControl(Node row)
+    {
+        var masterType = Type.GetType(
+            "MegaCrit.Sts2.Core.Nodes.Screens.Settings.NMasterVolumeSlider, sts2", false);
+        if (masterType == null)
+        {
+            GD.PrintErr("[Sts2Unlimited] NMasterVolumeSlider type not found — difficulty row left unlocked.");
+            return null;
+        }
+
+        var sliderControl = FindNodeByType(row, masterType);
+        if (sliderControl == null)
+        {
+            GD.PrintErr("[Sts2Unlimited] NMasterVolumeSlider not found in the difficulty row — left unlocked.");
+            return null;
+        }
+
+        var slider = sliderControl.GetNodeOrNull("Slider");
+        if (slider == null)
+            GD.PrintErr("[Sts2Unlimited] 'Slider' child not found in the difficulty row — left unlocked.");
+        return slider;
     }
 
     public static void SaveSettings()

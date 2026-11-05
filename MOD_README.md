@@ -26,6 +26,11 @@ To configure without launching the game, edit `sts2unlimited.maxplayers.txt` in 
 
 The default is **8 players** and 16 is the maximum. Higher values are not clamped, but they break lobbies — every peer has to agree on the packet format, which is sized for 16.
 
+**Difficulty scaling in multiplayer is controlled by the host.** Everyone in the lobby
+uses the host's value; your own slider only applies to singleplayer. All players need
+the mod, and a host on an older version cannot send a value — that run falls back to
+scaling by the real player count.
+
 ## Troubleshooting
 
 **Lobby still shows 4 player slots**

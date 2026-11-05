@@ -537,22 +537,30 @@ internal static class Tests
         var captured = new List<string>();
         DifficultySync.LogSink = (level, message) => captured.Add($"{level}: {message}");
 
+        // The return value is load-bearing, not incidental. Nothing registers a handler for
+        // DifficultySyncMessage, so a prefix that lets the original run drives the bus into its
+        // "no message handlers are registered for that type!" branch — a Log.Error on every
+        // inbound packet, on every client, which also feeds the game's Sentry reporting. Observed
+        // in-game before this was fixed. Every path that recognises our type must return false.
         DifficultySync.Reset();
-        DifficultySync.Prefix_SendMessageToAllHandlers(new DifficultySyncMessage(7), 42UL);
+        Check("a valid message is consumed, so the bus cannot log its no-handler error",
+            !DifficultySync.Prefix_SendMessageToAllHandlers(new DifficultySyncMessage(7), 42UL));
         Check("a valid message latches", DifficultySync.TryGetHostEffectiveCount(out int latched));
         AreEqual("a valid message latches its count", 7, latched);
 
         // A foreign payload decoded into our type: sentinel absent because it never round-tripped.
         DifficultySync.Reset();
         captured.Clear();
-        DifficultySync.Prefix_SendMessageToAllHandlers(new DifficultySyncMessage(), 42UL);
+        Check("a sentinel-less message is still consumed",
+            !DifficultySync.Prefix_SendMessageToAllHandlers(new DifficultySyncMessage(), 42UL));
         Check("a message with no sentinel is dropped", !DifficultySync.TryGetHostEffectiveCount(out _));
         AreEqual("dropping a foreign message warns", 1, captured.Count(l => l.StartsWith("Warn")));
 
         // Someone else's message must pass straight through.
         DifficultySync.Reset();
         captured.Clear();
-        DifficultySync.Prefix_SendMessageToAllHandlers(new LobbySeedChangedMessage(), 42UL);
+        Check("an unrelated message runs the original, so the bus still delivers it",
+            DifficultySync.Prefix_SendMessageToAllHandlers(new LobbySeedChangedMessage(), 42UL));
         Check("an unrelated message does not latch", !DifficultySync.TryGetHostEffectiveCount(out _));
         AreEqual("an unrelated message logs nothing", 0, captured.Count);
 
@@ -567,7 +575,8 @@ internal static class Tests
             DifficultySync.TryBeginHostBroadcast(NetGameType.Host, out int hostValue));
         AreEqual("host's own value", 6, hostValue);
         captured.Clear();
-        DifficultySync.Prefix_SendMessageToAllHandlers(new DifficultySyncMessage(9), 99UL);
+        Check("a rejected peer message is still consumed",
+            !DifficultySync.Prefix_SendMessageToAllHandlers(new DifficultySyncMessage(9), 99UL));
         Check("a peer's message does not overwrite the host's own latched value",
             DifficultySync.TryGetHostEffectiveCount(out int stillHost) && stillHost == 6);
         AreEqual("rejecting a peer's overwrite attempt warns", 1, captured.Count(l => l.StartsWith("Warn")));

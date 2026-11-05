@@ -146,9 +146,17 @@ public static class DifficultySync
     /// Every inbound message passes through here, on host and client alike, which is why this is
     /// the receive seam: no service reference to find, and no subscription lifecycle to leak.
     /// </summary>
-    public static void Prefix_SendMessageToAllHandlers(INetMessage message, ulong senderId)
+    /// <returns>
+    /// false — skip the original — for our own message type, true for everything else. Nothing
+    /// registers a handler for DifficultySyncMessage (this prefix IS the handler), so letting the
+    /// original run would reach its "no message handlers are registered for that type" branch and
+    /// Log.Error on every inbound packet. Skipping also bypasses the bus's buffering path, which
+    /// is strictly better here: the value is latched on arrival instead of being replayed later,
+    /// and a latch that lands before the first monster is scaled is the whole point.
+    /// </returns>
+    public static bool Prefix_SendMessageToAllHandlers(INetMessage message, ulong senderId)
     {
-        if (message is not DifficultySyncMessage sync) return;
+        if (message is not DifficultySyncMessage sync) return true;
 
         if (!sync.IsValid)
         {
@@ -157,7 +165,7 @@ public static class DifficultySync
                 $"sentinel (0x{sync.Sentinel:X8}) from {senderId}. Mod-added message ids are " +
                 $"positional, so this is most likely another mod's message decoded into ours — " +
                 $"check that every peer has the same mods installed.");
-            return;
+            return false;
         }
 
         if (_broadcastThisRun)
@@ -170,10 +178,11 @@ public static class DifficultySync
                 $"[DifficultySync] Ignored a difficulty-sync message from {senderId}: this peer " +
                 $"already broadcast as host this run, so an inbound value is not authoritative " +
                 $"and was not latched.");
-            return;
+            return false;
         }
 
         Latch(sync.EffectiveCount, $"peer {senderId}");
+        return false;
     }
 
     /// <summary>

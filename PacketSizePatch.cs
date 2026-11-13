@@ -150,6 +150,11 @@ public static class PacketSizePatch
         Log.LogMessage(LogLevel.Info, LogType.Generic,
             $"[PacketSizePatch] Patched {patchedTypes} types, {errors} errors. " +
             $"WireBits={GetRequiredBits()} (fixed for AbsoluteMax={AbsoluteMaxPlayers})");
+
+        // Required: without the widened wire format, lobby messages cannot
+        // describe more than four players at all.
+        PatchRegistry.Record("PacketWriter/PacketReader list width", patchedTypes > 0,
+            detail: $"no Serialize/Deserialize pairs matched ({errors} errors)");
     }
 
     private static IEnumerable<Type> SafeGetTypes(Assembly asm)

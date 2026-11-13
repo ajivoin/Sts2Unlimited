@@ -38,6 +38,8 @@ internal static class Tests
         // other first, and no test can ever reach the real logger by omission.
         ListHeaderWidthPatch.LogSink = (level, message) => _log.Add($"{level}: {message}");
         DifficultySync.LogSink = (level, message) => _log.Add($"{level}: {message}");
+        ChestPatch.LogSink = (level, message) => _log.Add($"{level}: {message}");
+        PatchRegistry.LogSink = (level, message) => _log.Add($"{level}: {message}");
 
         RequiredBitsMath();
         TranspilerRewritesRealGameIl();
@@ -58,6 +60,12 @@ internal static class Tests
         RejoinResendDecisionTable();
         HostBroadcastRoleGate();
         LobbyEntryClearsStaleLatch();
+        LobbyInitTargetsResolveForEveryMode();
+        ChestPatchMembersResolve();
+        ChestTranspilerClampsRealGameIl();
+        ChestTranspilerRefusesToGuessOnUnknownIl();
+        ChestClampDegradesSafely();
+        PatchRegistryNamesBrokenPatches();
 
         Console.WriteLine(_failures == 0 ? "\nALL TESTS PASSED" : $"\n{_failures} TEST(S) FAILED");
         return _failures == 0 ? 0 : 1;
@@ -800,4 +808,145 @@ internal static class Tests
     private static ICollection ReadList(PacketReader reader, Type elementType, int lengthBits)
         => (ICollection)AccessTools.Method(typeof(PacketReader), "ReadList", null, new[] { elementType })
             .Invoke(reader, new object[] { lengthBits });
+    // Every game mode has its own host screen and every one of them hardcodes
+    // maxPlayers: 4 at the call site. v1.0.3 patched only two of the four, which
+    // silently capped Blitz and Dread lobbies at four players — the fifth peer
+    // completed the ENet handshake and was then kicked with NetError.LobbyFull.
+    // If any of these stops resolving, that cap comes back.
+    private static void LobbyInitTargetsResolveForEveryMode()
+    {
+        var screens = new[]
+        {
+            typeof(MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect.NCharacterSelectScreen),
+            typeof(MegaCrit.Sts2.Core.Nodes.Screens.CustomRun.NCustomRunScreen),
+            typeof(MegaCrit.Sts2.Core.Nodes.Screens.Blitz.NBlitzScreen),
+            typeof(MegaCrit.Sts2.Core.Nodes.Screens.Dread.NDreadScreen),
+        };
+
+        foreach (var screen in screens)
+        {
+            var m = screen.GetMethod("InitializeMultiplayerAsHost",
+                BindingFlags.Public | BindingFlags.Instance, null,
+                new[] { typeof(INetGameService), typeof(int) }, null);
+
+            Check($"{screen.Name}.InitializeMultiplayerAsHost(INetGameService, int) resolves", m != null);
+            if (m != null)
+                AreEqual($"{screen.Name}.InitializeMultiplayerAsHost arg 1", "maxPlayers",
+                    m.GetParameters()[1].Name);
+        }
+    }
+
+    // ChestPatch binds its public surface at compile time, but five private
+    // members still have to be found by name. Those are exactly what broke
+    // silently in v0.113.0, so they get asserted rather than warned about.
+    private static void ChestPatchMembersResolve()
+    {
+        Check("ChestPatch.TryInitialize()", ChestPatch.TryInitialize(),
+            string.Join(" | ", _log.Where(l => l.Contains("ChestPatch"))));
+        Check("ChestPatch.Ready", ChestPatch.Ready);
+        Check("NTreasureRoomRelicCollection.InitializeRelics resolves",
+            ChestPatch.GetInitializeRelicsMethod() != null);
+
+        // The clamp casts this field to List<Control>; a different collection
+        // type would make it return the relic count unchanged and quietly
+        // restore the hang.
+        var layouts = AccessTools.Field(
+            typeof(MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic.NTreasureRoomRelicCollection),
+            "_holderLayouts");
+        Check("_holderLayouts is List<Control>",
+            layouts != null && layouts.FieldType == typeof(List<Godot.Control>),
+            layouts?.FieldType.ToString() ?? "null");
+    }
+
+    // Runs the real transpiler over the real IL of the real method. The site is
+    // the layout-selection test "i == currentRelics.Count - 1", which must come
+    // out as "i == ClampToLayoutCount(currentRelics.Count, this) - 1".
+    private static void ChestTranspilerClampsRealGameIl()
+    {
+        var method = ChestPatch.GetInitializeRelicsMethod();
+        if (method == null) { Check("InitializeRelics IL available", false); return; }
+
+        var before = PatchProcessor.GetOriginalInstructions(method);
+        var after = ChestPatch.Transpile_InitializeRelics(before).ToList();
+
+        Check("chest transpiler reports applied", ChestPatch.TranspilerApplied);
+        AreEqual("chest transpiler inserts exactly 2 instructions", before.Count + 2, after.Count);
+
+        int clampCalls = after.Count(c => c.opcode == OpCodes.Call
+            && c.operand is MethodInfo mi && mi.Name == nameof(ChestPatch.ClampToLayoutCount));
+        AreEqual("ClampToLayoutCount call sites", 1, clampCalls);
+
+        int at = after.FindIndex(c => c.opcode == OpCodes.Call
+            && c.operand is MethodInfo mi && mi.Name == nameof(ChestPatch.ClampToLayoutCount));
+
+        // The clamp has to sit between the Count call and the "- 1" compare, or
+        // it is clamping something other than the relic count.
+        Check("clamp is preceded by ldarg.0", at > 0 && after[at - 1].opcode == OpCodes.Ldarg_0);
+        Check("clamp consumes a get_Count result",
+            at > 1 && after[at - 2].opcode == OpCodes.Callvirt
+                   && after[at - 2].operand is MethodInfo c && c.Name == "get_Count");
+        Check("clamp feeds the - 1 compare",
+            at + 3 < after.Count
+            && after[at + 1].opcode == OpCodes.Ldc_I4_1
+            && after[at + 2].opcode == OpCodes.Sub
+            && (after[at + 3].opcode == OpCodes.Bne_Un || after[at + 3].opcode == OpCodes.Bne_Un_S));
+    }
+
+    // If the method is reshaped again, the patch must say so instead of
+    // rewriting whichever site happens to look closest. Silence is what let the
+    // old chest patch ship dead.
+    private static void ChestTranspilerRefusesToGuessOnUnknownIl()
+    {
+        int before = _log.Count;
+        var nothingToMatch = new List<CodeInstruction>
+        {
+            new CodeInstruction(OpCodes.Ldarg_0),
+            new CodeInstruction(OpCodes.Ldc_I4_1),
+            new CodeInstruction(OpCodes.Sub),
+            new CodeInstruction(OpCodes.Ret),
+        };
+
+        var after = ChestPatch.Transpile_InitializeRelics(nothingToMatch).ToList();
+
+        AreEqual("unmatched IL is returned untouched", nothingToMatch.Count, after.Count);
+        Check("unmatched IL clears TranspilerApplied", !ChestPatch.TranspilerApplied);
+        Check("unmatched IL logs an error",
+            _log.Skip(before).Any(l => l.StartsWith("Error") && l.Contains("layout-selection site")));
+
+        // Leave the flag describing the real method, not this synthetic one.
+        ChestPatch.Transpile_InitializeRelics(
+            PatchProcessor.GetOriginalInstructions(ChestPatch.GetInitializeRelicsMethod())).ToList();
+    }
+
+    // The clamp runs inside game IL, so it must never throw back into the
+    // method it was inlined into — a bad instance returns the count unchanged,
+    // which is exactly vanilla behaviour.
+    private static void ChestClampDegradesSafely()
+    {
+        AreEqual("clamp with no instance passes the count through", 9,
+            ChestPatch.ClampToLayoutCount(9, null));
+    }
+
+    // The registry is the thing that would have caught the dead chest patch, so
+    // its own accounting is worth asserting.
+    private static void PatchRegistryNamesBrokenPatches()
+    {
+        PatchRegistry.Reset();
+        PatchRegistry.Record("works", true);
+        PatchRegistry.Record("optional thing", false, required: false, detail: "absent");
+
+        AreEqual("optional failure is not a required failure", 0, PatchRegistry.RequiredFailures);
+        Check("optional failure is named in the summary",
+            PatchRegistry.Summary().Contains("optional thing"));
+
+        PatchRegistry.Record("core thing", false, detail: "renamed upstream");
+        AreEqual("required failure counted", 1, PatchRegistry.RequiredFailures);
+        Check("required failure is called BROKEN", PatchRegistry.Summary().Contains("BROKEN: core thing"));
+
+        PatchRegistry.Reset();
+        PatchRegistry.Record("works", true);
+        AreEqual("clean run reports no failures", 0, PatchRegistry.RequiredFailures);
+        Check("clean summary says all applied", PatchRegistry.Summary() == "all 1 patches applied",
+            PatchRegistry.Summary());
+    }
 }

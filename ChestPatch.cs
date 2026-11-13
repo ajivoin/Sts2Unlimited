@@ -3,343 +3,449 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
+using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Logging;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Multiplayer.Game;
+using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
+using MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic;
+using MegaCrit.Sts2.Core.Runs;
 
 namespace Sts2Unlimited;
 
+/// <summary>
+/// Keeps the shared treasure chest usable when there are more relics than the
+/// game has holders for.
+///
+/// Game v0.113.0 redesigned this screen. It used to grow a single
+/// _multiplayerHolders list at runtime; now treasure_room.tscn ships six
+/// pre-built layouts (Container/Layout1..Layout6, holding 1..6 relic holders)
+/// and InitializeRelics picks the one whose index == relicCount - 1:
+///
+///     for (int i = 0; i &lt; _holderLayouts.Count; i++)
+///         if (i == currentRelics.Count - 1) { show it; _holdersInUse = its children; }
+///         else hide it;
+///
+/// A 7th relic therefore matches no layout at all: every layout stays hidden,
+/// _holdersInUse stays empty, no holder is ever clickable, and the run hangs
+/// with every player waiting on a vote that cannot be cast. Seven relics is
+/// reachable at 7+ players in standard mode, and at 5+ players in Blitz (which
+/// generates players + 2).
+///
+/// The fix is two halves and needs both:
+///
+///   1. A transpiler clamps the layout choice to the largest available layout,
+///      so Layout6 is selected instead of none.
+///   2. A postfix tops _holdersInUse up to one holder per relic, by borrowing
+///      the idle holders sitting in the five now-hidden layouts (15 of them,
+///      so this covers up to 21 relics).
+///
+/// Clamping alone is not enough. AwardRelics emits ConsolationPrize/Skipped
+/// results for relic indices nobody voted for, and AnimateRelicAwards does
+/// _holdersInUse[result.relicIndex] — so relic index 6 against six holders
+/// throws inside the award animation and the run hangs anyway, just later.
+///
+/// Everything here binds to the game's types at compile time on purpose. The
+/// previous version of this patch resolved NTreasureRoomRelicCollection and
+/// its fields from strings, so when v0.113.0 renamed them the patch quietly
+/// stopped installing and shipped broken for weeks. Referencing HoldersInUse
+/// (added in v0.113.0) means a build against an older sts2.dll now fails to
+/// compile instead.
+/// </summary>
 public static class ChestPatch
 {
-    // Cached by RegisterReflectionCache() — called once at mod load
-    private static FieldInfo _multiplayerHoldersField;
-    private static Type _relicHolderType;
+	/// <summary>Widest ring we lay holders out on, in pixels, before crowding forces it wider.</summary>
+	private const float RingRadiusX = 380f;
 
-    // Cached RunManager reflection
-    private static Type _runManagerType;
-    private static PropertyInfo _instanceProp;
-    private static PropertyInfo _stateProp;
-    private static FieldInfo _stateField;
-    private static PropertyInfo _playersListProp;
-    private static FieldInfo _playersListField;
+	/// <summary>Ring is wider than it is tall — the chest screen has far more horizontal room.</summary>
+	private const float RingRadiusY = 200f;
 
-    // Set by Prefix, read by Postfix — avoids using holders.Count which may include unused duplicates
-    private static int _activePlayers;
+	/// <summary>Holders are 136x136 in treasure_room.tscn; leave a little air between them.</summary>
+	private const float HolderSpacing = 150f;
 
-    // Cached holder Index setter
-    private static MethodInfo _indexSetter;
+	/// <summary>
+	/// Logging indirection. The game's logger calls into Godot natives and
+	/// segfaults outside a game process, so the headless test harness swaps
+	/// this for a capturing sink.
+	/// </summary>
+	internal static Action<LogLevel, string> LogSink =
+		(level, message) => Log.LogMessage(level, LogType.Generic, message);
 
-    private static readonly MethodInfo _getLoopCountMethod =
-        typeof(ChestPatch).GetMethod(nameof(GetLoopCount), BindingFlags.Public | BindingFlags.Static);
+	private static FieldInfo _holderLayoutsField;
+	private static FieldInfo _holdersInUseField;
+	private static FieldInfo _runStateField;
+	private static FieldInfo _currentRelicsField;
+	private static MethodInfo _pickRelicMethod;
+	private static MethodInfo _refreshNavigationMethod;
 
-    /// <summary>
-    /// Resolves types and fields once at mod load.
-    /// </summary>
-    public static void RegisterReflectionCache()
-    {
-        // -- RunManager --
-        _runManagerType = Type.GetType("MegaCrit.Sts2.Core.Runs.RunManager, sts2", false);
-        if (_runManagerType != null)
-        {
-            const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic
-                                   | BindingFlags.Instance | BindingFlags.Static
-                                   | BindingFlags.FlattenHierarchy;
+	private static readonly MethodInfo _clampMethod =
+		typeof(ChestPatch).GetMethod(nameof(ClampToLayoutCount), BindingFlags.Public | BindingFlags.Static);
 
-            _instanceProp = _runManagerType.GetProperty("Instance", all);
+	/// <summary>True once every private member this patch reaches for has been located.</summary>
+	public static bool Ready { get; private set; }
 
-            // Try property first, then field for State
-            _stateProp = _runManagerType.GetProperty("State", all);
-            if (_stateProp == null)
-                _stateField = _runManagerType.GetField("State", all)
-                           ?? _runManagerType.GetField("_state", all)
-                           ?? _runManagerType.GetField("_runState", all);
+	/// <summary>
+	/// Resolves the handful of private members the patch needs. Public API is
+	/// bound at compile time; these are the members C# cannot reach directly.
+	/// Returns false (and says which member was missing) rather than letting a
+	/// half-initialized patch install.
+	/// </summary>
+	public static bool TryInitialize()
+	{
+		var collection = typeof(NTreasureRoomRelicCollection);
 
-            // Resolve Players from the State type
-            var stateType = _stateProp?.PropertyType ?? _stateField?.FieldType;
-            if (stateType != null)
-            {
-                _playersListProp = stateType.GetProperty("Players", all);
-                if (_playersListProp == null)
-                    _playersListField = stateType.GetField("Players", all)
-                                     ?? stateType.GetField("_players", all);
-            }
+		_holderLayoutsField = AccessTools.Field(collection, "_holderLayouts");
+		_holdersInUseField = AccessTools.Field(collection, "_holdersInUse");
+		_runStateField = AccessTools.Field(collection, "_runState");
+		_pickRelicMethod = AccessTools.Method(collection, "PickRelic", new[] { typeof(NTreasureRoomRelicHolder) });
+		_refreshNavigationMethod = AccessTools.Method(collection, "RefreshNavigation");
+		_currentRelicsField = AccessTools.Field(typeof(TreasureRoomRelicSynchronizer), "_currentRelics");
 
-            // Log all State-like members to help diagnose when things go wrong
-            var stateMembers = string.Join(", ", _runManagerType
-                .GetMembers(all)
-                .Where(m => m.Name.ToLower().Contains("state") || m.Name.ToLower().Contains("player"))
-                .Select(m => m.Name));
-            Log.LogMessage(LogLevel.Info, LogType.Generic,
-                $"[ChestPatch] RunManager State/Player members: {stateMembers}");
-        }
-        Log.LogMessage(LogLevel.Info, LogType.Generic,
-            $"[ChestPatch] RunManager cache: Instance={_instanceProp?.Name ?? "null"}, " +
-            $"State={_stateProp?.Name ?? _stateField?.Name ?? "null"}, " +
-            $"Players={_playersListProp?.Name ?? _playersListField?.Name ?? "null"}");
+		var missing = new List<string>();
+		if (_holderLayoutsField == null) missing.Add("NTreasureRoomRelicCollection._holderLayouts");
+		if (_holdersInUseField == null) missing.Add("NTreasureRoomRelicCollection._holdersInUse");
+		if (_runStateField == null) missing.Add("NTreasureRoomRelicCollection._runState");
+		if (_pickRelicMethod == null) missing.Add("NTreasureRoomRelicCollection.PickRelic");
+		if (_refreshNavigationMethod == null) missing.Add("NTreasureRoomRelicCollection.RefreshNavigation");
+		if (_currentRelicsField == null) missing.Add("TreasureRoomRelicSynchronizer._currentRelics");
 
-        // -- NTreasureRoomRelicCollection --
-        var collectionType = Type.GetType(
-            "MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic.NTreasureRoomRelicCollection, sts2", false);
+		if (missing.Count > 0)
+		{
+			LogSink(LogLevel.Error,
+				$"[ChestPatch] Cannot install — missing game members: {string.Join(", ", missing)}");
+			Ready = false;
+			return false;
+		}
 
-        if (collectionType == null)
-        {
-            // Fallback: search all loaded assemblies by simple name
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                collectionType = asm.GetType("MegaCrit.Sts2.Core.Nodes.Screens.TreasureRoomRelic.NTreasureRoomRelicCollection");
-                if (collectionType != null) break;
-            }
-        }
+		Ready = true;
+		return true;
+	}
 
-        if (collectionType == null)
-        {
-            Log.LogMessage(LogLevel.Warn, LogType.Generic,
-                "[ChestPatch] NTreasureRoomRelicCollection not found — chest patch will be skipped");
-            return;
-        }
+	public static MethodInfo GetInitializeRelicsMethod() =>
+		AccessTools.Method(typeof(NTreasureRoomRelicCollection), nameof(NTreasureRoomRelicCollection.InitializeRelics));
 
-        _multiplayerHoldersField = collectionType.GetField("_multiplayerHolders",
-            BindingFlags.NonPublic | BindingFlags.Instance);
+	/// <summary>
+	/// Called from the transpiled InitializeRelics in place of
+	/// currentRelics.Count, so the layout search looks for an index that
+	/// actually exists. Returns the relic count unchanged in every case the
+	/// base game already handles.
+	/// </summary>
+	public static int ClampToLayoutCount(int relicCount, NTreasureRoomRelicCollection collection)
+	{
+		try
+		{
+			var layouts = _holderLayoutsField?.GetValue(collection) as List<Control>;
+			if (layouts == null || layouts.Count == 0) return relicCount;
+			if (relicCount <= layouts.Count) return relicCount;
 
-        if (_multiplayerHoldersField == null)
-        {
-            Log.LogMessage(LogLevel.Warn, LogType.Generic,
-                "[ChestPatch] _multiplayerHolders field not found on NTreasureRoomRelicCollection");
-            return;
-        }
+			// Debug, not Info: the transpiled site sits inside the layout loop, so
+			// this runs once per layout. The postfix's one-line summary below is
+			// the signal worth reading.
+			LogSink(LogLevel.Debug,
+				$"[ChestPatch] {relicCount} relics but only {layouts.Count} layouts — using the largest");
+			return layouts.Count;
+		}
+		catch (Exception e)
+		{
+			LogSink(LogLevel.Warn,
+				$"[ChestPatch] ClampToLayoutCount failed: {e.Message}");
+			return relicCount;
+		}
+	}
 
-        var genericArgs = _multiplayerHoldersField.FieldType.GetGenericArguments();
-        _relicHolderType = genericArgs.Length > 0 ? genericArgs[0] : null;
+	/// <summary>
+	/// Rewrites the layout-selection test in InitializeRelics from
+	///     i == currentRelics.Count - 1
+	/// to
+	///     i == ClampToLayoutCount(currentRelics.Count, this) - 1
+	/// by inserting ldarg.0 + call immediately after the get_Count.
+	///
+	/// The match is the four-instruction sequence get_Count / ldc.i4.1 / sub /
+	/// bne.un, which occurs exactly once in the method — the other two
+	/// get_Count calls are loop bounds followed by blt, and the empty-chest
+	/// test is followed by brtrue. Anything other than exactly one match means
+	/// the method changed shape again, so the patch reports failure instead of
+	/// guessing.
+	/// </summary>
+	public static IEnumerable<CodeInstruction> Transpile_InitializeRelics(
+		IEnumerable<CodeInstruction> instructions)
+	{
+		var codes = new List<CodeInstruction>(instructions);
 
-        _indexSetter = _relicHolderType?.GetMethod("set_Index",
-            BindingFlags.Public | BindingFlags.Instance);
+		int matchIndex = -1;
+		int matches = 0;
 
-        Log.LogMessage(LogLevel.Info, LogType.Generic,
-            $"[ChestPatch] _multiplayerHolders: {_multiplayerHoldersField.FieldType.Name}, " +
-            $"holder type: {_relicHolderType?.Name ?? "unknown"}, " +
-            $"set_Index: {(_indexSetter != null ? "found" : "null")}");
-    }
+		for (int i = 0; i < codes.Count - 3; i++)
+		{
+			if (codes[i].opcode != OpCodes.Callvirt) continue;
+			if (codes[i].operand is not MethodInfo m || m.Name != "get_Count") continue;
+			if (codes[i + 1].opcode != OpCodes.Ldc_I4_1) continue;
+			if (codes[i + 2].opcode != OpCodes.Sub) continue;
+			if (codes[i + 3].opcode != OpCodes.Bne_Un && codes[i + 3].opcode != OpCodes.Bne_Un_S) continue;
 
-    public static FieldInfo GetMultiplayerHoldersField() => _multiplayerHoldersField;
+			matches++;
+			matchIndex = i;
+		}
 
-    public static MethodInfo GetInitializeRelicsMethod()
-    {
-        if (_multiplayerHoldersField == null) return null;
-        return _multiplayerHoldersField.DeclaringType?.GetMethod(
-            "InitializeRelics",
-            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-    }
+		if (matches != 1)
+		{
+			LogSink(LogLevel.Error,
+				$"[ChestPatch] Expected exactly 1 layout-selection site in InitializeRelics, found {matches} " +
+				"— leaving the method unpatched; chests will hang above 6 relics");
+			TranspilerApplied = false;
+			return codes;
+		}
 
-    /// <summary>
-    /// Returns the actual number of players in the current run.
-    /// Used as the loop bound in InitializeRelics so every player gets a relic holder.
-    /// </summary>
-    public static int GetLoopCount()
-    {
-        try
-        {
-            if (_instanceProp != null)
-            {
-                var rm = _instanceProp.GetValue(null);
-                if (rm != null)
-                {
-                    var state = _stateProp?.GetValue(rm) ?? _stateField?.GetValue(rm);
-                    if (state != null)
-                    {
-                        var players = _playersListProp?.GetValue(state) ?? _playersListField?.GetValue(state);
-                        if (players != null)
-                        {
-                            int count = (int)players.GetType()
-                                .GetProperty("Count")!.GetValue(players)!;
-                            Log.LogMessage(LogLevel.Debug, LogType.Generic,
-                                $"[ChestPatch] GetLoopCount() = {count}");
-                            return count;
-                        }
-                    }
-                }
-            }
-        }
-        catch (Exception e)
-        {
-            Log.LogMessage(LogLevel.Warn, LogType.Generic,
-                $"[ChestPatch] GetLoopCount() failed: {e.Message}");
-        }
-        return Sts2Unlimited.MaxPlayersOverride;
-    }
+		var loadThis = new CodeInstruction(OpCodes.Ldarg_0);
 
-    /// <summary>
-    /// Runs before InitializeRelics. Duplicates the last holder node for each extra player
-    /// so the transpiler's extended loop has a real node per player.
-    /// </summary>
-    public static void Prefix_InitializeRelics(object __instance)
-    {
-        try
-        {
-            if (_multiplayerHoldersField == null) return;
+		// A branch landing on the ldc.i4.1 has to run the clamp too, so any
+		// labels on it move to the first instruction we insert.
+		loadThis.labels.AddRange(codes[matchIndex + 1].labels);
+		codes[matchIndex + 1].labels.Clear();
 
-            var holders = _multiplayerHoldersField.GetValue(__instance) as System.Collections.IList;
-            if (holders == null || holders.Count == 0) return;
+		codes.InsertRange(matchIndex + 1, new[]
+		{
+			loadThis,
+			new CodeInstruction(OpCodes.Call, _clampMethod),
+		});
 
-            int numPlayers = GetLoopCount();
-            _activePlayers = numPlayers; // save for postfix
+		LogSink(LogLevel.Info, "[ChestPatch] Clamped layout selection in InitializeRelics");
+		TranspilerApplied = true;
+		return codes;
+	}
 
-            var lastHolder = holders[holders.Count - 1] as Godot.Node;
-            if (lastHolder == null) return;
+	/// <summary>Whether the transpiler found its site. Reported in the load summary.</summary>
+	public static bool TranspilerApplied { get; private set; }
 
-            var parent = lastHolder.GetParent();
-            if (parent == null)
-            {
-                Log.LogMessage(LogLevel.Warn, LogType.Generic,
-                    "[ChestPatch] Last holder has no parent — cannot duplicate holders");
-                return;
-            }
+	/// <summary>
+	/// Tops the active layout up to one holder per relic. Runs after the base
+	/// method, so the layout is already chosen, visible, and populated with
+	/// however many holders it shipped with.
+	/// </summary>
+	public static void Postfix_InitializeRelics(NTreasureRoomRelicCollection __instance)
+	{
+		if (!Ready) return;
 
-            // Duplicate extra holders if needed.
-            int startIndex = holders.Count;
-            for (int i = startIndex; i < numPlayers; i++)
-            {
-                var duplicate = lastHolder.Duplicate();
-                if (duplicate == null) continue;
-                parent.AddChild(duplicate);
-                _indexSetter?.Invoke(duplicate, new object[] { i });
-                holders.Add(duplicate);
-            }
+		var synchronizer = RunManager.Instance?.TreasureRoomRelicSynchronizer;
+		var relics = synchronizer?.CurrentRelics;
+		if (relics == null || relics.Count == 0) return;
 
-            Log.LogMessage(LogLevel.Info, LogType.Generic,
-                $"[ChestPatch] Prefix: added {holders.Count - startIndex} holder(s), total={holders.Count}");
-        }
-        catch (Exception e)
-        {
-            Log.LogMessage(LogLevel.Warn, LogType.Generic,
-                $"[ChestPatch] Prefix_InitializeRelics failed: {e.Message}");
-        }
-    }
+		var holders = _holdersInUseField.GetValue(__instance) as List<NTreasureRoomRelicHolder>;
+		if (holders == null || holders.Count == 0) return;
+		if (relics.Count <= holders.Count) return;
 
-    private static Godot.Vector2 GetNodePosition(object node)
-    {
-        if (node is Godot.Control c) return c.Position;
-        if (node is Godot.Node2D n) return n.Position;
-        return Godot.Vector2.Zero;
-    }
+		try
+		{
+			AddMissingHolders(__instance, holders, relics);
+		}
+		catch (Exception e)
+		{
+			LogSink(LogLevel.Error,
+				$"[ChestPatch] Could not add holders for {relics.Count} relics: {e.Message}");
 
-    private static void SetNodePosition(object node, Godot.Vector2 pos)
-    {
-        if (node is Godot.Control c) { c.Position = pos; return; }
-        if (node is Godot.Node2D n) { n.Position = pos; return; }
-        // Last resort: use .NET reflection (handles GDExtension-wrapped types)
-        node.GetType().GetProperty("Position")?.SetValue(node, pos);
-    }
+			// Last resort: shrink the relic list to what the screen can show.
+			// Fewer relics on offer is a worse chest, but it is not a hung run.
+			TrimRelicsToHolderCount(synchronizer, holders.Count, relics.Count);
+		}
+	}
 
-    private static Godot.Vector2 GetNodeSize(object node)
-    {
-        if (node is Godot.Control c) return c.Size;
-        return new Godot.Vector2(100f, 100f);
-    }
+	private static void AddMissingHolders(
+		NTreasureRoomRelicCollection collection,
+		List<NTreasureRoomRelicHolder> holders,
+		IReadOnlyList<RelicModel> relics)
+	{
+		var activeLayout = holders[holders.Count - 1].GetParent();
+		if (activeLayout == null)
+			throw new InvalidOperationException("active layout holder has no parent");
 
-    /// <summary>
-    /// Runs after InitializeRelics. Repositions all holders in an evenly-spaced circle
-    /// so the game's default positioning doesn't stick.
-    /// </summary>
-    public static void Postfix_InitializeRelics(object __instance)
-    {
-        try
-        {
-            if (_multiplayerHoldersField == null) return;
+		var spares = CollectIdleHolders(collection, activeLayout);
+		int needed = relics.Count - holders.Count;
+		if (spares.Count < needed)
+			throw new InvalidOperationException(
+				$"need {needed} more holders but only {spares.Count} are idle");
 
-            var holders = _multiplayerHoldersField.GetValue(__instance) as System.Collections.IList;
-            if (holders == null || holders.Count == 0) return;
+		var runState = (IRunState)_runStateField.GetValue(collection);
+		var onReleased = Callable.From(
+			(Action<NTreasureRoomRelicHolder>)Delegate.CreateDelegate(
+				typeof(Action<NTreasureRoomRelicHolder>), collection, _pickRelicMethod));
 
-            // Use the player count saved by the prefix, not holders.Count which may include
-            // unused duplicates added to satisfy MaxPlayersOverride.
-            int numPlayers = _activePlayers > 0 ? _activePlayers : GetLoopCount();
-            if (numPlayers <= 0 || numPlayers > holders.Count) numPlayers = holders.Count;
-            var holderSize = GetNodeSize(holders[0]);
+		// Everything from here on is a holder the base game did not lay out, so
+		// holders[0] stays a clean reference to compare the new ones against.
+		int firstBorrowed = holders.Count;
+		var reference = holders[0];
 
-            // Determine center and radius from parent, falling back to average of holder positions.
-            var parentNode = (holders[0] as Godot.Node)?.GetParent();
-            var parentCtrl = parentNode as Godot.Control;
+		for (int i = 0; i < needed; i++)
+		{
+			var holder = spares[i];
+			holder.GetParent()?.RemoveChild(holder);
+			activeLayout.AddChild(holder);
 
-            Godot.Vector2 center;
-            float radius;
+			int index = holders.Count;
+			holder.Initialize(relics[index], runState);
+			holder.Index = index;
 
-            if (parentCtrl != null && (parentCtrl.Size.X > 1f || parentCtrl.Size.Y > 1f))
-            {
-                center = parentCtrl.Size / 2f;
-                radius = Math.Min(parentCtrl.Size.X, parentCtrl.Size.Y) * 0.35f;
-                center.Y += radius * 0.15f;
-            }
-            else
-            {
-                // Fall back: center on the average position of current holders.
-                Godot.Vector2 sum = Godot.Vector2.Zero;
-                for (int i = 0; i < numPlayers; i++)
-                    sum += GetNodePosition(holders[i]);
-                center = sum / numPlayers + holderSize / 2f;
-                radius = 200f;
-            }
+			// The base game ignores this return value. We cannot afford to: a holder
+			// that is visible but not wired to PickRelic is unclickable, which is the
+			// exact hang this patch exists to prevent, with no exception to notice.
+			// Throwing hands over to the trim fallback -- a smaller chest, not a
+			// stuck one.
+			var connected = holder.Connect(NClickableControl.SignalName.Released, onReleased);
+			if (connected != Error.Ok)
+				throw new InvalidOperationException(
+					$"connecting holder {index} to PickRelic returned {connected}");
 
-            Log.LogMessage(LogLevel.Info, LogType.Generic,
-                $"[ChestPatch] Circle layout: center={center}, radius={radius}, n={numPlayers}, " +
-                $"holderType={holders[0]?.GetType().Name ?? "null"}, parentType={parentNode?.GetType().Name ?? "null"}");
+			holder.VoteContainer.RefreshPlayerVotes();
+			holders.Add(holder);
+		}
 
-            // Position all holders evenly around the circle, starting at the top (−90°).
-            for (int i = 0; i < numPlayers; i++)
-            {
-                float angle = -MathF.PI / 2f + 2f * MathF.PI * i / numPlayers;
-                var pos = center
-                    + new Godot.Vector2(MathF.Cos(angle), MathF.Sin(angle)) * radius
-                    - holderSize / 2f;
-                SetNodePosition(holders[i], pos);
-            }
+		ArrangeInRing(holders, activeLayout as Control);
+		_refreshNavigationMethod.Invoke(collection, null);
 
-            Log.LogMessage(LogLevel.Info, LogType.Generic,
-                $"[ChestPatch] Postfix: arranged {numPlayers} holders in circle");
-        }
-        catch (Exception e)
-        {
-            Log.LogMessage(LogLevel.Warn, LogType.Generic,
-                $"[ChestPatch] Postfix_InitializeRelics failed: {e.Message}\n{e.StackTrace}");
-        }
-    }
+		LogSink(LogLevel.Info,
+			$"[ChestPatch] Extended chest to {collection.HoldersInUse.Count} holders for {relics.Count} relics");
 
-    public static IEnumerable<CodeInstruction> Transpile_InitializeRelics(
-        IEnumerable<CodeInstruction> instructions)
-    {
-        if (_multiplayerHoldersField == null)
-        {
-            Log.LogMessage(LogLevel.Warn, LogType.Generic,
-                "[ChestPatch] Reflection cache not ready — InitializeRelics transpiler skipped");
-            return instructions;
-        }
+		ReportHolderState(holders, firstBorrowed, reference);
+	}
 
-        var codes = new List<CodeInstruction>(instructions);
-        var getCountMethod = _multiplayerHoldersField.FieldType.GetMethod("get_Count");
+	/// <summary>
+	/// Logs where every holder ended up, and flags any borrowed one that differs from
+	/// a holder the base game placed itself in a way that would stop a player clicking
+	/// it.
+	///
+	/// The comparison is deliberately differential rather than absolute. The obvious
+	/// check -- `IsVisibleInTree()` -- is useless here: `AnimIn()` makes the collection
+	/// visible only *after* `InitializeRelics` returns, so at this point every holder
+	/// reports invisible, the base game's own included. Comparing against a sibling the
+	/// base game laid out is immune to that ordering, and to any later change in it.
+	///
+	/// This is the patch's only field diagnostic. Its body cannot be exercised
+	/// headlessly -- it needs live Godot nodes -- so when something does go wrong here,
+	/// this log line is what there is to go on.
+	/// </summary>
+	private static void ReportHolderState(
+		List<NTreasureRoomRelicHolder> holders, int firstBorrowed, NTreasureRoomRelicHolder reference)
+	{
+		try
+		{
+			LogSink(LogLevel.Info, "[ChestPatch] Holders: " + string.Join("  ", holders.Select(
+				(h, i) => $"#{i}{(i >= firstBorrowed ? "*" : "")}@{h.OffsetLeft:0},{h.OffsetTop:0} {h.Size.X:0}x{h.Size.Y:0}")));
 
-        // Replace loop upper-bound: _multiplayerHolders.Count → GetLoopCount()
-        //
-        // Target IL:
-        //   ldfld  _multiplayerHolders   ← codes[i]
-        //   callvirt get_Count           ← codes[i+1]
-        //
-        // Replacement:
-        //   pop                          ← discard the 'this' ldfld would have consumed
-        //   call GetLoopCount            ← pushes actual player count
-        for (int i = 0; i < codes.Count - 1; i++)
-        {
-            if (codes[i].opcode == OpCodes.Ldfld &&
-                codes[i].operand is FieldInfo f && f == _multiplayerHoldersField &&
-                codes[i + 1].opcode == OpCodes.Callvirt &&
-                codes[i + 1].operand is MethodInfo m && m == getCountMethod)
-            {
-                codes[i]     = new CodeInstruction(OpCodes.Pop);
-                codes[i + 1] = new CodeInstruction(OpCodes.Call, _getLoopCountMethod);
-                Log.LogMessage(LogLevel.Info, LogType.Generic,
-                    "[ChestPatch] Patched loop bound in InitializeRelics");
-                return codes;
-            }
-        }
+			var problems = new List<string>();
+			for (int i = firstBorrowed; i < holders.Count; i++)
+			{
+				var holder = holders[i];
+				if (!holder.IsInsideTree())
+					problems.Add($"#{i} is not in the scene tree");
+				if (holder.Visible != reference.Visible)
+					problems.Add($"#{i} Visible={holder.Visible} but the base game's holders are {reference.Visible}");
+				if (holder.GetParent() != reference.GetParent())
+					problems.Add($"#{i} is parented to {holder.GetParent()?.Name}, not {reference.GetParent()?.Name}");
+				if (holder.VoteContainer == null)
+					problems.Add($"#{i} has no VoteContainer");
+			}
 
-        Log.LogMessage(LogLevel.Warn, LogType.Generic,
-            "[ChestPatch] Loop bound pattern not found in InitializeRelics — deadlock fix may be ineffective");
-        return codes;
-    }
+			if (problems.Count > 0)
+				LogSink(LogLevel.Error,
+					$"[ChestPatch] {problems.Count} borrowed holder(s) may not be clickable: {string.Join("; ", problems)}");
+		}
+		catch (Exception e)
+		{
+			// Diagnostics must never be the thing that breaks the chest.
+			LogSink(LogLevel.Warn, $"[ChestPatch] Could not report holder state: {e.Message}");
+		}
+	}
+
+	/// <summary>
+	/// Every relic holder sitting in a layout the base game just hid. These are
+	/// fully instanced from the same scene resource as the active ones and have
+	/// no runtime signal connections, which makes them safer to move than a
+	/// Duplicate() — Node.Duplicate copies signal connections by default and
+	/// would double-wire PickRelic.
+	/// </summary>
+	private static List<NTreasureRoomRelicHolder> CollectIdleHolders(
+		NTreasureRoomRelicCollection collection, Node activeLayout)
+	{
+		var layouts = _holderLayoutsField.GetValue(collection) as List<Control>;
+		var idle = new List<NTreasureRoomRelicHolder>();
+		if (layouts == null) return idle;
+
+		// Largest layouts first, so a 7-relic chest robs Layout5 rather than
+		// stripping the small ones and leaving an odd spread behind.
+		foreach (var layout in layouts.AsEnumerable().Reverse())
+		{
+			if (layout == null || layout == activeLayout) continue;
+			idle.AddRange(layout.GetChildren().OfType<NTreasureRoomRelicHolder>());
+		}
+
+		return idle;
+	}
+
+	/// <summary>
+	/// Lays all holders out on an ellipse centred on the layout. The shipped
+	/// Layout1..Layout6 arrangements are hand-placed and only go up to six, so
+	/// once we are adding holders we take over positioning entirely.
+	/// </summary>
+	private static void ArrangeInRing(List<NTreasureRoomRelicHolder> holders, Control layout)
+	{
+		int n = holders.Count;
+		if (n == 0) return;
+
+		// Widen the ring until neighbours stop overlapping: the chord between
+		// two adjacent points on a circle of radius r is 2*r*sin(pi/n).
+		float minRadius = HolderSpacing / (2f * MathF.Sin(MathF.PI / Math.Max(n, 3)));
+		float scale = Math.Max(1f, minRadius / RingRadiusY);
+
+		float radiusX = RingRadiusX * scale;
+		float radiusY = RingRadiusY * scale;
+
+		// Do not push holders off the edge of the screen.
+		if (layout != null && layout.Size.X > 1f && layout.Size.Y > 1f)
+		{
+			radiusX = Math.Min(radiusX, layout.Size.X * 0.5f - HolderSpacing * 0.5f);
+			radiusY = Math.Min(radiusY, layout.Size.Y * 0.5f - HolderSpacing * 0.5f);
+		}
+
+		for (int i = 0; i < n; i++)
+		{
+			float angle = -MathF.PI / 2f + 2f * MathF.PI * i / n;
+			float cx = MathF.Cos(angle) * radiusX;
+			float cy = MathF.Sin(angle) * radiusY;
+
+			// Holders are anchored to the layout's centre (anchors_preset 8),
+			// so their offsets are already relative to the point we want.
+			var holder = holders[i];
+			float half = holder.Size.X > 1f ? holder.Size.X * 0.5f : HolderSpacing * 0.5f;
+			float halfY = holder.Size.Y > 1f ? holder.Size.Y * 0.5f : HolderSpacing * 0.5f;
+
+			holder.OffsetLeft = cx - half;
+			holder.OffsetRight = cx + half;
+			holder.OffsetTop = cy - halfY;
+			holder.OffsetBottom = cy + halfY;
+		}
+	}
+
+	/// <summary>
+	/// Drops relics the screen has no holder for. Only reached if adding
+	/// holders failed; without it AnimateRelicAwards would index
+	/// _holdersInUse past its end and hang the run.
+	/// </summary>
+	private static void TrimRelicsToHolderCount(
+		TreasureRoomRelicSynchronizer synchronizer, int holderCount, int relicCount)
+	{
+		try
+		{
+			if (_currentRelicsField.GetValue(synchronizer) is not List<RelicModel> current) return;
+			if (current.Count <= holderCount) return;
+
+			current.RemoveRange(holderCount, current.Count - holderCount);
+			LogSink(LogLevel.Warn,
+				$"[ChestPatch] Fell back to trimming {relicCount} relics down to {holderCount}");
+		}
+		catch (Exception e)
+		{
+			LogSink(LogLevel.Error,
+				$"[ChestPatch] Relic trim fallback failed too: {e.Message} — the chest may hang");
+		}
+	}
 }

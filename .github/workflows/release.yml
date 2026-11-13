@@ -94,6 +94,30 @@ jobs:
         run: |
           gh release download deps --pattern "sts2.dll" --repo "${{ github.repository }}"
 
+      # The reference assembly is a release asset, not a tracked file, so it can
+      # fall behind the game without anything in a diff to show it — it has
+      # happened twice (a March build was still in use in September, and a
+      # September build during v0.113.0). The patches bind to game types at
+      # compile time, so a stale DLL does fail the build, but with errors like
+      # "namespace 'Blitz' does not exist" that read as a mod bug rather than a
+      # stale dependency. Check it up front and say so plainly instead.
+      - name: Verify sts2.dll is a supported game build
+        run: |
+          echo "sts2.dll: $(stat -c%s sts2.dll) bytes, md5 $(md5sum sts2.dll | cut -d' ' -f1)"
+          missing=""
+          for marker in HoldersInUse NBlitzScreen; do
+            grep -aq "$marker" sts2.dll || missing="$missing $marker"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::sts2.dll predates game build v0.113.0 (missing:$missing)."
+            echo "::error::Upload a current one to the 'deps' release:"
+            echo "::error::  gh release upload deps \\"
+            echo "::error::    \"<steam>/steamapps/common/Slay the Spire 2/data_sts2_windows_x86_64/sts2.dll\" \\"
+            echo "::error::    --repo ${{ github.repository }} --clobber"
+            exit 1
+          fi
+          echo "sts2.dll looks like v0.113.0 or newer."
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v6.0.0
         with:

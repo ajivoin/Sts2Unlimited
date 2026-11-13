@@ -104,13 +104,33 @@ which is logged separately.
 
 ## Building from Source
 
-Requires .NET 9 and the `sts2.dll` game reference assembly placed in the project root.
+Requires .NET 9 and the `sts2.dll` game reference assembly placed in the project
+root, copied from a **game build v0.113.0 or newer**:
+
+```
+<steam>/steamapps/common/Slay the Spire 2/data_sts2_windows_x86_64/sts2.dll
+```
+
+The patches bind to game types and members at compile time, so an older copy
+fails the build rather than silently producing a mod whose patches do not apply.
+That is deliberate: the chest patch previously resolved its targets from strings,
+and when v0.113.0 renamed them it shipped inert for weeks.
 
 ```bash
 dotnet build --configuration ExportRelease
 ```
 
 Output is bundled to `release/` by the `BundleRelease` MSBuild target.
+
+CI does not use your local copy — it downloads `sts2.dll` from this repo's
+`deps` release. **When the game updates, refresh that asset too**, or releases
+will keep building against the old build:
+
+```bash
+gh release upload deps \
+  "<steam>/steamapps/common/Slay the Spire 2/data_sts2_windows_x86_64/sts2.dll" \
+  --clobber
+```
 
 ### Project Structure
 
@@ -123,7 +143,8 @@ DifficultySync.cs           — Makes the host's difficulty value authoritative 
 PacketSizePatch.cs          — Transpiles the lobby player-list header to a fixed 5-bit width
 ListHeaderWidthPatch.cs     — Enforces that width at WriteList/ReadList, which never inline
 CampfirePatch.cs            — Keeps rest-site scene slots bounds-safe past the 4 in the scene
-ChestPatch.cs               — Lays out treasure-room relics for more than 4 players
+ChestPatch.cs               — Lays out treasure-room relics for more than 6 relics
+PatchRegistry.cs            — Tracks which patches installed, so a dead one cannot report success
 SaveDirPatch.cs             — Redirects the save directory per Steam profile
 sts2unlimited.csproj        — Build config and BundleRelease target
 Sts2Unlimited.json          — Mod metadata (name, version, author)

@@ -457,6 +457,7 @@ public static class DifficultySync
         if (target == null)
         {
             LogSink(LogLevel.Warn, $"[DifficultySync] {description} NOT FOUND — skipping.");
+            PatchRegistry.Record($"DifficultySync: {description}", false, detail: "method not found");
             return;
         }
 
@@ -468,10 +469,12 @@ public static class DifficultySync
             if (prefix) harmony.Patch(target, prefix: patch);
             else        harmony.Patch(target, postfix: patch);
             LogSink(LogLevel.Info, $"[DifficultySync] Patched {description}.");
+            PatchRegistry.Record($"DifficultySync: {description}", true);
         }
         catch (Exception e)
         {
             LogSink(LogLevel.Warn, $"[DifficultySync] Failed to patch {description}: {e.Message}");
+            PatchRegistry.Record($"DifficultySync: {description}", false, detail: e.Message);
         }
     }
 }

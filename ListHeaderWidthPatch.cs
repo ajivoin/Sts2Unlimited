@@ -97,6 +97,11 @@ public static class ListHeaderWidthPatch
                 if (TryPatch(harmony, typeof(PacketReader), "ReadList", elementType, readPrefix)) patched++;
             }
 
+            // Optional: this guards against another mod inlining a vanilla-width
+            // list call, not against anything in the base game.
+            PatchRegistry.Record("PacketWriter.WriteList/ReadList guard", patched > 0,
+                required: false, detail: "no vanilla-width list call sites found");
+
             if (patched == 0)
                 LogSink(LogLevel.Warn,
                     "[ListHeaderWidthPatch] No vanilla-width list call sites were found — the inlining guard is inactive. " +
@@ -108,6 +113,8 @@ public static class ListHeaderWidthPatch
         catch (Exception e)
         {
             LogSink(LogLevel.Warn, $"[ListHeaderWidthPatch] Apply failed — inlining guard is inactive: {e.Message}");
+            PatchRegistry.Record("PacketWriter.WriteList/ReadList guard", false,
+                required: false, detail: e.Message);
         }
     }
 

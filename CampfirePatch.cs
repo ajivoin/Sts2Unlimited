@@ -13,6 +13,13 @@ namespace Sts2Unlimited;
 
 public static class CampfirePatch
 {
+    /// <summary>
+    /// Whether the transpiler actually found its IL site. A transpiler that
+    /// matches nothing installs cleanly and does nothing, so this is the only
+    /// honest signal that the fix is live.
+    /// </summary>
+    public static bool Applied { get; private set; }
+
     private static readonly MethodInfo _safeAddMethod =
         typeof(CampfirePatch).GetMethod(nameof(SafeAddToContainer),
             BindingFlags.Public | BindingFlags.Static)!;
@@ -55,6 +62,7 @@ public static class CampfirePatch
         {
             Log.LogMessage(LogLevel.Error, LogType.Generic,
                 "[CampfirePatch] Could not find _characterContainers field — campfire patch skipped");
+            Applied = false;
             return codes;
         }
 
@@ -77,6 +85,7 @@ public static class CampfirePatch
             }
         }
 
+        Applied = patched;
         if (!patched)
             Log.LogMessage(LogLevel.Warn, LogType.Generic,
                 "[CampfirePatch] Pattern not found in NRestSiteRoom._Ready — campfire patch may be ineffective");

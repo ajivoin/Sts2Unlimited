@@ -44,7 +44,22 @@ public static class Sts2Unlimited
 		LoadConfig();
 		ApplyHarmonyPatches();
 		SettingsMenuIntegration.InitializeSettingsMenuUI(harmony);
-		Log.LogMessage(LogLevel.Info, LogType.Generic, $"Sts2Unlimited loaded successfully! maxPlayers set to {MaxPlayersOverride}");
+
+		// Never report success without checking. A patch that quietly stopped
+		// matching gets named here instead of being buried in one Warn line.
+		int broken = PatchRegistry.RequiredFailures;
+		if (broken > 0)
+		{
+			Log.LogMessage(LogLevel.Error, LogType.Generic,
+				$"Sts2Unlimited loaded DEGRADED — {broken} required patch(es) are not active. " +
+				$"maxPlayers set to {MaxPlayersOverride}. {PatchRegistry.Summary()}");
+		}
+		else
+		{
+			Log.LogMessage(LogLevel.Info, LogType.Generic,
+				$"Sts2Unlimited loaded successfully! maxPlayers set to {MaxPlayersOverride} " +
+				$"({PatchRegistry.Summary()})");
+		}
 	}
 
 	private static void LoadConfig()
@@ -115,12 +130,12 @@ public static class Sts2Unlimited
 			{
 				var steamPatch = typeof(Sts2Unlimited).GetMethod(nameof(Patch_StartSteamHost), BindingFlags.NonPublic | BindingFlags.Static);
 				harmony.Patch(steamHostMethod, prefix: new HarmonyMethod(steamPatch));
-				Log.LogMessage(LogLevel.Info, LogType.Generic, "[HostPatch] Patched StartSteamHost");
+				PatchRegistry.Record("NetHostGameService.StartSteamHost", true);
 			}
 			else
 			{
-				Log.LogMessage(LogLevel.Warn, LogType.Generic,
-					$"[HostPatch] StartSteamHost(int) NOT FOUND on NetHostGameService. Members: {netHostMethodList}");
+				PatchRegistry.Record("NetHostGameService.StartSteamHost", false,
+					detail: $"StartSteamHost(int) not found. Members: {netHostMethodList}");
 			}
 
 			// Patch StartENetHost to use custom player count
@@ -136,12 +151,12 @@ public static class Sts2Unlimited
 			{
 				var enetPatch = typeof(Sts2Unlimited).GetMethod(nameof(Patch_StartENetHost), BindingFlags.NonPublic | BindingFlags.Static);
 				harmony.Patch(enetHostMethod, prefix: new HarmonyMethod(enetPatch));
-				Log.LogMessage(LogLevel.Info, LogType.Generic, "[HostPatch] Patched StartENetHost");
+				PatchRegistry.Record("NetHostGameService.StartENetHost", true);
 			}
 			else
 			{
-				Log.LogMessage(LogLevel.Warn, LogType.Generic,
-					$"[HostPatch] StartENetHost(UInt16, int) NOT FOUND on NetHostGameService. Members: {netHostMethodList}");
+				PatchRegistry.Record("NetHostGameService.StartENetHost", false,
+					detail: $"StartENetHost(UInt16, int) not found. Members: {netHostMethodList}");
 			}
 
 			// Patch NCharacterSelectScreen.InitializeMultiplayerAsHost — this is what actually
@@ -153,49 +168,16 @@ public static class Sts2Unlimited
 			// b215ae7 on a since-unconfirmed theory that it caused a partial-lobby black screen —
 			// IsAboutToBeginGame/BeginRunForAllPlayersIfAllReady only wait on the players actually
 			// present in StartRunLobby.Players, not on MaxPlayers, so that shouldn't reproduce here.
-			var charSelectType = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect.NCharacterSelectScreen);
-			var charInitMethod = charSelectType.GetMethod(
-				"InitializeMultiplayerAsHost",
-				BindingFlags.Public | BindingFlags.Instance,
-				null,
-				[typeof(INetGameService), typeof(int)],
-				null
-			);
-
-			if (charInitMethod != null)
-			{
-				var charPatch = typeof(Sts2Unlimited).GetMethod(nameof(Patch_LobbyInitMaxPlayers), BindingFlags.NonPublic | BindingFlags.Static);
-				harmony.Patch(charInitMethod, prefix: new HarmonyMethod(charPatch));
-				Log.LogMessage(LogLevel.Info, LogType.Generic, "[HostPatch] Patched NCharacterSelectScreen.InitializeMultiplayerAsHost");
-			}
-			else
-			{
-				Log.LogMessage(LogLevel.Warn, LogType.Generic,
-					"[HostPatch] NCharacterSelectScreen.InitializeMultiplayerAsHost(INetGameService, int) NOT FOUND.");
-			}
-
-			// Patch NCustomRunScreen.InitializeMultiplayerAsHost — same reasoning as above, for the
-			// Custom Run host flow.
-			var customRunType = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CustomRun.NCustomRunScreen);
-			var customInitMethod = customRunType.GetMethod(
-				"InitializeMultiplayerAsHost",
-				BindingFlags.Public | BindingFlags.Instance,
-				null,
-				[typeof(INetGameService), typeof(int)],
-				null
-			);
-
-			if (customInitMethod != null)
-			{
-				var customPatch = typeof(Sts2Unlimited).GetMethod(nameof(Patch_LobbyInitMaxPlayers), BindingFlags.NonPublic | BindingFlags.Static);
-				harmony.Patch(customInitMethod, prefix: new HarmonyMethod(customPatch));
-				Log.LogMessage(LogLevel.Info, LogType.Generic, "[HostPatch] Patched NCustomRunScreen.InitializeMultiplayerAsHost");
-			}
-			else
-			{
-				Log.LogMessage(LogLevel.Warn, LogType.Generic,
-					"[HostPatch] NCustomRunScreen.InitializeMultiplayerAsHost(INetGameService, int) NOT FOUND.");
-			}
+			// All four mode screens share this signature and pass maxPlayers straight into
+			// StartRunLobby, so one prefix covers them all. Patching only some of them caps
+			// the rest at four: StartENetHost accepts the fifth peer's handshake and
+			// StartRunLobby then kicks it with NetError.LobbyFull. NDailyRunScreen is
+			// deliberately absent — its overload takes no maxPlayers at all, so daily runs
+			// are capped elsewhere.
+			PatchLobbyInit(typeof(MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect.NCharacterSelectScreen));
+			PatchLobbyInit(typeof(MegaCrit.Sts2.Core.Nodes.Screens.CustomRun.NCustomRunScreen));
+			PatchLobbyInit(typeof(MegaCrit.Sts2.Core.Nodes.Screens.Blitz.NBlitzScreen));
+			PatchLobbyInit(typeof(MegaCrit.Sts2.Core.Nodes.Screens.Dread.NDreadScreen));
 
 			// Patch NRestSiteRoom._Ready to handle >4 players at the campfire
 			var restSiteRoomType = typeof(MegaCrit.Sts2.Core.Nodes.Rooms.NRestSiteRoom);
@@ -213,7 +195,12 @@ public static class Sts2Unlimited
 					nameof(CampfirePatch.Transpile_Ready),
 					BindingFlags.Public | BindingFlags.Static);
 				harmony.Patch(restSiteReadyMethod, transpiler: new HarmonyMethod(campfireTranspiler));
-				Log.LogMessage(LogLevel.Debug, LogType.Generic, "Patched NRestSiteRoom._Ready (campfire fix)");
+				PatchRegistry.Record("NRestSiteRoom._Ready (campfire)", CampfirePatch.Applied,
+					detail: "transpiler installed but found no matching IL site");
+			}
+			else
+			{
+				PatchRegistry.Record("NRestSiteRoom._Ready (campfire)", false, detail: "_Ready() not found");
 			}
 
 			// Patch ALL ConstructDefault overloads with a PostFix that re-applies
@@ -236,11 +223,12 @@ public static class Sts2Unlimited
 					Log.LogMessage(LogLevel.Debug, LogType.Generic,
 						$"[SaveDirPatch] PostFix patched ConstructDefault({sig})");
 				}
+				PatchRegistry.Record("SaveManager.ConstructDefault", true, required: false);
 			}
 			else
 			{
-				Log.LogMessage(LogLevel.Warn, LogType.Generic,
-					"[SaveDirPatch] SaveManager.ConstructDefault not found — save-dir patch limited to ReplaceInstance");
+				PatchRegistry.Record("SaveManager.ConstructDefault", false, required: false,
+					detail: "not found — save-dir patch limited to ReplaceInstance");
 			}
 
 			// Patch InitProfileId — this is what sets the Steam-user-scoped path and overwrites
@@ -259,13 +247,12 @@ public static class Sts2Unlimited
 					nameof(SaveDirPatch.Postfix_InitProfileId),
 					BindingFlags.Public | BindingFlags.Static);
 				harmony.Patch(initProfileIdMethod, postfix: new HarmonyMethod(initProfilePostfix));
-				Log.LogMessage(LogLevel.Info, LogType.Generic,
-					"[SaveDirPatch] Patched SaveManager.InitProfileId (save-dir support)");
+				PatchRegistry.Record("SaveManager.InitProfileId", true);
 			}
 			else
 			{
-				Log.LogMessage(LogLevel.Warn, LogType.Generic,
-					"[SaveDirPatch] SaveManager.InitProfileId not found — save-dir may not work after profile init");
+				PatchRegistry.Record("SaveManager.InitProfileId", false,
+					detail: "not found — save-dir may not work after profile init");
 			}
 
 			// Patch SwitchProfileId — also updates path fields if the user changes profiles.
@@ -283,8 +270,12 @@ public static class Sts2Unlimited
 					nameof(SaveDirPatch.Postfix_SwitchProfileId),
 					BindingFlags.Public | BindingFlags.Static);
 				harmony.Patch(switchProfileIdMethod, postfix: new HarmonyMethod(switchProfilePostfix));
-				Log.LogMessage(LogLevel.Debug, LogType.Generic,
-					"[SaveDirPatch] Patched SaveManager.SwitchProfileId");
+				PatchRegistry.Record("SaveManager.SwitchProfileId", true, required: false);
+			}
+			else
+			{
+				PatchRegistry.Record("SaveManager.SwitchProfileId", false, required: false,
+					detail: "not found");
 			}
 
 			// Replace already-created singleton if --save-dir is present
@@ -301,35 +292,10 @@ public static class Sts2Unlimited
 			ListHeaderWidthPatch.Apply(harmony);
 
 			// Build reflection cache for chest patch
-			ChestPatch.RegisterReflectionCache();
-
-			// Patch NTreasureRoomRelicCollection.InitializeRelics to support >4 players:
-			// - extends the loop bound from _multiplayerHolders.Count to RunManager.NumPlayers
-			// - bounds-clamps _multiplayerHolders[i] so extra players share the last holder
-			var initRelicsMethod = ChestPatch.GetInitializeRelicsMethod();
-			if (initRelicsMethod != null)
-			{
-				var chestPrefix = typeof(ChestPatch).GetMethod(
-					nameof(ChestPatch.Prefix_InitializeRelics),
-					BindingFlags.Public | BindingFlags.Static);
-				var chestPostfix = typeof(ChestPatch).GetMethod(
-					nameof(ChestPatch.Postfix_InitializeRelics),
-					BindingFlags.Public | BindingFlags.Static);
-				var chestTranspiler = typeof(ChestPatch).GetMethod(
-					nameof(ChestPatch.Transpile_InitializeRelics),
-					BindingFlags.Public | BindingFlags.Static);
-				harmony.Patch(initRelicsMethod,
-					prefix: new HarmonyMethod(chestPrefix),
-					postfix: new HarmonyMethod(chestPostfix),
-					transpiler: new HarmonyMethod(chestTranspiler));
-				Log.LogMessage(LogLevel.Info, LogType.Generic,
-					"[ChestPatch] Patched NTreasureRoomRelicCollection.InitializeRelics (chest fix)");
-			}
-			else
-			{
-				Log.LogMessage(LogLevel.Warn, LogType.Generic,
-					"[ChestPatch] NTreasureRoomRelicCollection.InitializeRelics not found — chest fix skipped");
-			}
+			// Keeps the shared treasure chest usable when there are more relics than
+			// the screen ships holders for — which is any chest at 7+ players, or 5+ in
+			// Blitz. ChestPatch explains the mechanism and why it takes two halves.
+			ApplyChestPatch();
 
 			// Patch difficulty scaling to support player-count override
 			DifficultyPatch.Apply(harmony);
@@ -347,6 +313,72 @@ public static class Sts2Unlimited
 	}
 
 	// Harmony patch methods - these intercept and modify the parameters before the actual method runs
+
+	/// <summary>
+	/// Overrides one host screen's hardcoded 4-player lobby cap.
+	/// </summary>
+	private static void PatchLobbyInit(Type screenType)
+	{
+		string target = $"{screenType.Name}.InitializeMultiplayerAsHost";
+
+		var initMethod = screenType.GetMethod(
+			"InitializeMultiplayerAsHost",
+			BindingFlags.Public | BindingFlags.Instance,
+			null,
+			[typeof(INetGameService), typeof(int)],
+			null
+		);
+
+		if (initMethod == null)
+		{
+			PatchRegistry.Record(target, false, detail: "(INetGameService, int) overload not found");
+			return;
+		}
+
+		var prefix = typeof(Sts2Unlimited).GetMethod(
+			nameof(Patch_LobbyInitMaxPlayers), BindingFlags.NonPublic | BindingFlags.Static);
+		harmony.Patch(initMethod, prefix: new HarmonyMethod(prefix));
+		PatchRegistry.Record(target, true);
+	}
+
+	/// <summary>
+	/// Installs the shared-chest fix: a transpiler to pick a layout that exists
+	/// and a postfix to fill it. Both are required — see ChestPatch for why
+	/// clamping the layout alone still hangs the run.
+	/// </summary>
+	private static void ApplyChestPatch()
+	{
+		const string target = "NTreasureRoomRelicCollection.InitializeRelics (chest)";
+
+		if (!ChestPatch.TryInitialize())
+		{
+			PatchRegistry.Record(target, false, detail: "required game members missing");
+			return;
+		}
+
+		var initRelicsMethod = ChestPatch.GetInitializeRelicsMethod();
+		if (initRelicsMethod == null)
+		{
+			PatchRegistry.Record(target, false, detail: "InitializeRelics() not found");
+			return;
+		}
+
+		var chestPostfix = typeof(ChestPatch).GetMethod(
+			nameof(ChestPatch.Postfix_InitializeRelics),
+			BindingFlags.Public | BindingFlags.Static);
+		var chestTranspiler = typeof(ChestPatch).GetMethod(
+			nameof(ChestPatch.Transpile_InitializeRelics),
+			BindingFlags.Public | BindingFlags.Static);
+
+		harmony.Patch(initRelicsMethod,
+			postfix: new HarmonyMethod(chestPostfix),
+			transpiler: new HarmonyMethod(chestTranspiler));
+
+		// Harmony runs the transpiler during Patch(), so by now it has already
+		// reported whether it found the site it needed.
+		PatchRegistry.Record(target, ChestPatch.TranspilerApplied,
+			detail: "transpiler found no layout-selection site to clamp");
+	}
 
 	private static bool Patch_StartSteamHost(ref int maxClients)
 	{

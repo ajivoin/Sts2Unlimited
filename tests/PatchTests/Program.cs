@@ -66,6 +66,11 @@ internal static class Tests
         ChestTranspilerClampsRealGameIl();
         ChestTranspilerRefusesToGuessOnUnknownIl();
         ChestClampDegradesSafely();
+        DifficultyPatchTargetsResolve();
+        DifficultyTranspilerRewritesRealBlockIl();
+        DifficultyTypeFallbackOrder();
+        DifficultyHpPrefixBindsByName();
+        GameTypeNameLiteralsResolve();
         PatchRegistryNamesBrokenPatches();
 
         Console.WriteLine(_failures == 0 ? "\nALL TESTS PASSED" : $"\n{_failures} TEST(S) FAILED");
@@ -926,6 +931,91 @@ internal static class Tests
     {
         AreEqual("clamp with no instance passes the count through", 9,
             ChestPatch.ClampToLayoutCount(9, null));
+    }
+
+    // v0.113 moved MultiplayerScalingModel out of Models.Singleton, and the block hook died
+    // behind a single Warn line. Every DifficultyPatch target is asserted here instead.
+    private static void DifficultyPatchTargetsResolve()
+    {
+        Check("MultiplayerScalingModel resolves under its current name",
+            DifficultyPatch.ResolveFirstType(DifficultyPatch.ScalingModelTypeName) != null,
+            DifficultyPatch.ScalingModelTypeName);
+        Check("MultiplayerScalingModel.ModifyBlockMultiplicative resolves",
+            DifficultyPatch.GetModifyBlockMethod() != null);
+
+        foreach (var name in DifficultyPatch.PowerScalingOverrideTypes)
+            Check($"{name} resolves", DifficultyPatch.ResolveFirstType(name) != null);
+    }
+
+    // The real transpiler over the real IL: exactly one Players.Count site, and the
+    // override call has to consume that Count directly.
+    private static void DifficultyTranspilerRewritesRealBlockIl()
+    {
+        var method = DifficultyPatch.GetModifyBlockMethod();
+        if (method == null) { Check("ModifyBlockMultiplicative IL available", false); return; }
+
+        var before = PatchProcessor.GetOriginalInstructions(method);
+        var after = DifficultyPatch.Transpile_PlayerCount(before, method).ToList();
+
+        AreEqual("block transpiler rewrites 1 Players.Count site", 1, DifficultyPatch.LastTranspilePatchCount);
+        AreEqual("block transpiler inserts exactly 1 instruction", before.Count + 1, after.Count);
+
+        int at = after.FindIndex(c => c.opcode == OpCodes.Call
+            && c.operand is MethodInfo mi && mi.Name == nameof(DifficultyPatch.EffectivePlayerCount));
+        Check("EffectivePlayerCount follows a Players.Count call",
+            at > 0 && after[at - 1].opcode == OpCodes.Callvirt
+                   && after[at - 1].operand is MethodInfo c && c.Name == "get_Count");
+    }
+
+    // Current name first, legacy second. A pre-v0.113 install must still work, and the
+    // fallback must not shadow the current name.
+    private static void DifficultyTypeFallbackOrder()
+    {
+        var current = DifficultyPatch.ResolveFirstType(DifficultyPatch.ScalingModelTypeName);
+        Check("legacy name is not what this sts2.dll uses",
+            DifficultyPatch.ResolveFirstType(DifficultyPatch.LegacyScalingModelTypeName) == null);
+        Check("an unresolvable first candidate falls through to the next",
+            current != null && DifficultyPatch.ResolveFirstType(
+                "MegaCrit.Sts2.Core.NoSuchType", DifficultyPatch.ScalingModelTypeName) == current);
+        Check("no resolvable candidate yields null",
+            DifficultyPatch.ResolveFirstType("MegaCrit.Sts2.Core.NoSuchType") == null);
+    }
+
+    // Harmony binds the HP prefix's "ref int playerCount" by parameter *name*. A rename
+    // upstream would make Patch() throw at load and skip every patch after it.
+    private static void DifficultyHpPrefixBindsByName()
+    {
+        foreach (var name in new[] { "ScaleHpForMultiplayer", "ScaleMonsterHpForMultiplayer" })
+        {
+            var m = AccessTools.Method(typeof(Creature), name);
+            Check($"Creature.{name} resolves", m != null);
+            if (m != null)
+                Check($"Creature.{name} still has an int playerCount",
+                    m.GetParameters().Any(p => p.Name == "playerCount" && p.ParameterType == typeof(int)));
+        }
+    }
+
+    // The class of bug, not just this instance: every game type the mod names in a string
+    // literal must exist in this sts2.dll. Legacy fallbacks are the only allowed exception.
+    private static void GameTypeNameLiteralsResolve()
+    {
+        var root = RepoRoot();
+        if (root == null) { Check("repository root is locatable", false); return; }
+
+        var legacy = new HashSet<string> { DifficultyPatch.LegacyScalingModelTypeName };
+        var literal = new Regex(@"""(MegaCrit\.Sts2\.[A-Za-z0-9_.]+?)(?:, sts2)?""");
+        int checkedCount = 0;
+
+        foreach (var file in Directory.GetFiles(root, "*.cs"))
+        foreach (Match m in literal.Matches(File.ReadAllText(file)))
+        {
+            var name = m.Groups[1].Value;
+            if (legacy.Contains(name)) continue;
+            checkedCount++;
+            Check($"{Path.GetFileName(file)}: {name} resolves",
+                DifficultyPatch.ResolveFirstType(name) != null);
+        }
+        Check("type-name literals were found to check", checkedCount > 0);
     }
 
     // The registry is the thing that would have caught the dead chest patch, so

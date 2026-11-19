@@ -19,8 +19,10 @@ public static class DifficultyPatch
 
     public static int EffectivePlayerCount(int actualCount) => PlayerCountResolver(actualCount);
 
+    // v0.113+
     internal const string ScalingModelTypeName =
-        "MegaCrit.Sts2.Core.Models.Singleton.MultiplayerScalingModel";
+        "MegaCrit.Sts2.Core.Models.MultiplayerScalingModel";
+    // up to v0.112; kept so an older install still gets block scaling
     internal const string LegacyScalingModelTypeName =
         "MegaCrit.Sts2.Core.Models.Singleton.MultiplayerScalingModel";
 
@@ -90,15 +92,22 @@ public static class DifficultyPatch
         PatchHpScaling(harmony);
 
         // MultiplayerScalingModel — controls enemy block scaling
+        // v0.113.0 moved MultiplayerScalingModel out of Models.Singleton; looked up by its old
+        // name, this hook died behind one Warn line while the mod reported a clean load. It is
+        // registered now, so a miss loads the mod DEGRADED and names this patch.
+        const string blockTarget = "MultiplayerScalingModel.ModifyBlockMultiplicative (block scaling)";
         var modifyBlock = GetModifyBlockMethod();
-        if (modifyBlock != null)
+        if (modifyBlock == null)
+            PatchRegistry.Record(blockTarget, false,
+                detail: $"not found as {ScalingModelTypeName} or {LegacyScalingModelTypeName}");
+        else
         {
             harmony.Patch(modifyBlock, transpiler: transpiler);
+            PatchRegistry.Record(blockTarget, LastTranspilePatchCount > 0,
+                detail: "no Players.Count call to rewrite");
             LogSink(LogLevel.Info,
                 "[DifficultyPatch] Patched MultiplayerScalingModel.ModifyBlockMultiplicative (block scaling).");
         }
-        else
-            LogSink(LogLevel.Warn, "[DifficultyPatch] MultiplayerScalingModel type not found.");
 
         PatchPowerScaling(harmony, transpiler);
     }
@@ -114,12 +123,17 @@ public static class DifficultyPatch
     // CombatState.CreateCreature-only patch did) misses any caller we haven't found — prefixing
     // the shared helper itself instead rewrites playerCount once, covering every current caller
     // and any future one automatically.
+    private const string HpTarget = "Creature.ScaleHpForMultiplayer (HP scaling)";
+    private const string MonsterHpTarget = "Creature.ScaleMonsterHpForMultiplayer (HP scaling)";
+
     private static void PatchHpScaling(Harmony harmony)
     {
         var creatureType = Type.GetType("MegaCrit.Sts2.Core.Entities.Creatures.Creature, sts2", false);
         if (creatureType == null)
         {
             LogSink(LogLevel.Warn, "[DifficultyPatch] Creature type not found.");
+            PatchRegistry.Record(HpTarget, false, detail: "Creature type not found");
+            PatchRegistry.Record(MonsterHpTarget, false, detail: "Creature type not found");
             return;
         }
 
@@ -131,11 +145,15 @@ public static class DifficultyPatch
         if (scaleHp != null)
         {
             harmony.Patch(scaleHp, prefix: prefixMethod);
+            PatchRegistry.Record(HpTarget, true);
             LogSink(LogLevel.Info, "[DifficultyPatch] Patched Creature.ScaleHpForMultiplayer (HP scaling — covers " +
                 "phase-transition/revive callers that read Players.Count directly).");
         }
         else
+        {
             LogSink(LogLevel.Warn, "[DifficultyPatch] Creature.ScaleHpForMultiplayer not found.");
+            PatchRegistry.Record(HpTarget, false, detail: "method not found");
+        }
 
         // ScaleMonsterHpForMultiplayer (the instance wrapper CreateCreature actually calls) has
         // its own early-return when playerCount == 1 — it never even calls the static helper
@@ -148,11 +166,15 @@ public static class DifficultyPatch
         if (scaleMonsterHp != null)
         {
             harmony.Patch(scaleMonsterHp, prefix: prefixMethod);
+            PatchRegistry.Record(MonsterHpTarget, true);
             LogSink(LogLevel.Info, "[DifficultyPatch] Patched Creature.ScaleMonsterHpForMultiplayer (HP scaling — covers " +
                 "initial spawn via CombatState.CreateCreature, including the singleplayer case).");
         }
         else
+        {
             LogSink(LogLevel.Warn, "[DifficultyPatch] Creature.ScaleMonsterHpForMultiplayer not found.");
+            PatchRegistry.Record(MonsterHpTarget, false, detail: "method not found");
+        }
     }
 
     private static void Prefix_ScaleHpForMultiplayer(ref int playerCount)

@@ -91,6 +91,8 @@ public static class Sts2Unlimited
 
 			// Fall back to legacy text file — only ever stored MaxPlayers (predates the JSON
 			// format and the difficulty fields), so this fallback only applies to that one value.
+			// Releases no longer ship this file (the default is the field initializer above);
+			// it is still read so an install whose owner edited it keeps that value.
 			// Runs whenever MaxPlayers wasn't loaded from JSON, whether because settings.json
 			// doesn't exist at all or because it exists but is missing/malformed that key.
 			if (!maxPlayersLoadedFromJson)

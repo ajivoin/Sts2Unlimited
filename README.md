@@ -15,8 +15,7 @@ mods/
     ├── sts2unlimited.dll
     ├── sts2unlimited.pck
     ├── Sts2Unlimited.json
-    ├── icon.svg
-    └── sts2unlimited.maxplayers.txt
+    └── icon.svg
 ```
 
 ## Known Issues
@@ -44,7 +43,7 @@ The easiest way is the **in-game settings menu**: open Settings and use the "Max
 
 16 is a hard ceiling rather than a slider preference: the lobby player-list packet header is widened to a fixed width sized for 16 players, so every peer agrees on the wire format (see [How It Works](#how-it-works)). The config file below is **not** clamped, so a larger value is accepted and then breaks lobbies.
 
-Alternatively, edit `sts2unlimited.maxplayers.txt` next to the mod's DLL and restart the game. This is a legacy fallback, consulted only when `sts2unlimited.settings.json` has no `MaxPlayers` key — once you have used the in-game slider, the text file is ignored.
+Alternatively, create or edit `sts2unlimited.settings.json` next to the mod's DLL, for example `{"MaxPlayers": 8}`, and restart the game. This is the file the slider writes. An `sts2unlimited.maxplayers.txt` from an older version is still read when the JSON has no `MaxPlayers` key, but it no longer ships: the default lives in code, so a release can't pick up a local value by accident.
 
 ## How It Works
 

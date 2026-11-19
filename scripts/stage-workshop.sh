@@ -5,8 +5,6 @@
 # Usage: MOD_UPLOADER=/path/to/ModUploader-win-x64 ./scripts/stage-workshop.sh
 set -euo pipefail
 
-readonly EXPECTED_MAX_PLAYERS=8   # the documented default; see workshop/README.md
-
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root"
 
@@ -25,22 +23,16 @@ fi
 echo "==> Building ExportRelease"
 dotnet build --configuration ExportRelease >/dev/null
 
-# The maxplayers file is gitignored, so the working tree's local value is what gets
-# bundled. Shipping a stray value is how v0.6.1 went out with 5 instead of 8.
-actual_max=$(tr -d '[:space:]' < release/sts2unlimited.maxplayers.txt)
-if [[ "$actual_max" != "$EXPECTED_MAX_PLAYERS" ]]; then
-    echo "error: release/sts2unlimited.maxplayers.txt is '$actual_max', expected $EXPECTED_MAX_PLAYERS" >&2
-    echo "       (it is gitignored; set it before staging)" >&2
-    exit 1
-fi
-
 # The manifest version is what subscribers see as the mod version.
 manifest_version=$(python3 -c "import json;print(json.load(open('release/Sts2Unlimited.json'))['version'])")
 
 echo "==> Staging content into $content"
+# No config file ships: the default max-player count (8) lives in code, so nothing in
+# the working tree can leak a local value into a release (v0.6.1 shipped 5 that way).
+# The list below is explicit, so a stale sts2unlimited.maxplayers.txt left in release/
+# by an older build is never picked up.
 rm -f "$content"/*
-cp release/Sts2Unlimited.json release/sts2unlimited.dll release/icon.svg \
-   release/sts2unlimited.maxplayers.txt "$content/"
+cp release/Sts2Unlimited.json release/sts2unlimited.dll release/icon.svg "$content/"
 # release/ produces Sts2Unlimited.pck; subscribers get the lowercase name.
 cp release/Sts2Unlimited.pck "$content/sts2unlimited.pck"
 # README.md is deliberately not shipped to the Workshop.

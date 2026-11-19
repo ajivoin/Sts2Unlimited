@@ -40,6 +40,7 @@ internal static class Tests
         DifficultySync.LogSink = (level, message) => _log.Add($"{level}: {message}");
         ChestPatch.LogSink = (level, message) => _log.Add($"{level}: {message}");
         PatchRegistry.LogSink = (level, message) => _log.Add($"{level}: {message}");
+        DifficultyPatch.LogSink = (level, message) => _log.Add($"{level}: {message}");
 
         RequiredBitsMath();
         TranspilerRewritesRealGameIl();

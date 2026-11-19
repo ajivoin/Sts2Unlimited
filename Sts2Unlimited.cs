@@ -298,6 +298,7 @@ public static class Sts2Unlimited
 			ApplyChestPatch();
 
 			// Patch difficulty scaling to support player-count override
+			DifficultyPatch.PlayerCountResolver = GetEffectivePlayerCount;
 			DifficultyPatch.Apply(harmony);
 
 			// DifficultySync is compiled into the headless harness, which does not compile this

@@ -33,19 +33,31 @@ where `content/` holds exactly the files that ship to subscribers.
 
 ## Releasing
 
+1. **Before** running the Release workflow, land this release's `changeNote` in
+   `workshop/workshop.json`. The workflow tags whatever is on the default branch, and the
+   staging script reads the note from the tag.
+2. Run the Release workflow. It runs the headless patch harness, bumps the version, and tags.
+3. Stage and upload from the tag:
+
 ```bash
-git checkout v1.2.3                  # release from the tag, not from main
-./scripts/stage-workshop.sh          # builds, verifies, stages into the workspace
+git fetch --tags
+git checkout v1.2.3                          # release from the tag, never a branch
+./scripts/stage-workshop.sh                  # checks, builds, stages; prints the note
+./scripts/stage-workshop.sh --upload         # same, then asks before publishing
 ```
 
-Then review the staged change note and upload:
+The script refuses to stage when:
 
-```bash
-cd "$MOD_UPLOADER" && ./ModUploader.exe upload --workspace Sts2Unlimited
-```
+- HEAD is not a release tag (`STAGE_ALLOW_UNTAGGED=1` allows a dry run, never an upload);
+- tracked files have uncommitted changes;
+- `changeNote` is unchanged since the previous tag — nothing updates it automatically, and
+  stale notes have shipped twice;
+- the headless patch harness fails;
+- the built manifest's version is not the tag — tags have pointed at the wrong bump commit
+  before, and the manifest is what the Workshop item reports.
 
-The upload is intentionally a separate manual step — it publishes to every subscriber and
-cannot be undone.
+Uploading publishes to every subscriber and cannot be undone, so `--upload` always asks
+first. Without it, the script prints the manual upload command.
 
 ### Things that bite
 

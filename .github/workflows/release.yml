@@ -123,9 +123,6 @@ jobs:
         with:
           dotnet-version: '9.0.x'
 
-      - name: Create default config files
-        run: echo "8" > sts2unlimited.maxplayers.txt
-
       - name: Build and bundle
         run: dotnet build --configuration ExportRelease
         # The BundleRelease MSBuild target copies all mod files to release/

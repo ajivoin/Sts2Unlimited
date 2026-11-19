@@ -14,7 +14,6 @@ Files to copy:
 - `sts2unlimited.pck`
 - `Sts2Unlimited.json`
 - `icon.svg`
-- `sts2unlimited.maxplayers.txt`
 
 Launch the game — the mod loads automatically.
 
@@ -22,7 +21,7 @@ Launch the game — the mod loads automatically.
 
 Open the in-game **Settings** menu and use the **Max Players** slider (range: 2–16). Changes are saved automatically and apply to the next lobby you host.
 
-To configure without launching the game, edit `sts2unlimited.maxplayers.txt` in the same folder as the mod's other files and restart. This is a legacy fallback: once you have used the in-game slider the value lives in `sts2unlimited.settings.json` and the text file is ignored.
+To configure without launching the game, create or edit `sts2unlimited.settings.json` in the same folder as the mod's other files, for example `{"MaxPlayers": 8}`, and restart. This is the same file the in-game slider writes. An `sts2unlimited.maxplayers.txt` from an older version is still read when `sts2unlimited.settings.json` has no `MaxPlayers` value, but it no longer ships.
 
 The default is **8 players** and 16 is the maximum. Higher values are not clamped, but they break lobbies — every peer has to agree on the packet format, which is sized for 16.
 
@@ -34,8 +33,8 @@ scaling by the real player count.
 ## Troubleshooting
 
 **Lobby still shows 4 player slots**
-- Restart the game after editing `sts2unlimited.maxplayers.txt` (slider changes need no restart; they apply to the next lobby you host)
-- Make sure `sts2unlimited.maxplayers.txt` is in the same folder as the DLLs and contains only a number
+- Restart the game after editing `sts2unlimited.settings.json` by hand (slider changes need no restart; they apply to the next lobby you host)
+- Make sure `sts2unlimited.settings.json` is in the same folder as the DLLs and is valid JSON, e.g. `{"MaxPlayers": 8}`
 
 **Game crashes on startup**
 - Verify all files are present in the mods folder

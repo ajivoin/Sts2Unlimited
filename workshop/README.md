@@ -55,8 +55,9 @@ cannot be undone.
 - **Steam must be running**, logged into the account that owns the item.
 - **The `.pck` is renamed.** `release/` produces `Sts2Unlimited.pck`; what ships is
   lowercase `sts2unlimited.pck`. The staging script handles this.
-- **`sts2unlimited.maxplayers.txt` is gitignored as a local setting**, so whatever is in
-  your working tree gets bundled. Releases through v0.6.1 shipped `5` this way while both
-  READMEs documented `8`. The staging script refuses to stage anything else.
+- **No config file ships.** Releases through v0.6.1 bundled a gitignored
+  `sts2unlimited.maxplayers.txt`, and shipped `5` from a working tree while both READMEs said
+  `8`. The default now lives in code (`maxPlayersOverride = 8`), and the staging script
+  copies an explicit file list, so a stale `.txt` left in `release/` never ships.
 - **`MOD_README.md` ships as `README.md`** (see the `BundleRelease` target); the root
   `README.md` is not shipped to the Workshop at all.

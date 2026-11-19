@@ -26,7 +26,6 @@
       <ReleaseFiles Include="Sts2Unlimited.pck" />
       <ReleaseFiles Include="Sts2Unlimited.json" />
       <ReleaseFiles Include="icon.svg" />
-      <ReleaseFiles Include="sts2unlimited.maxplayers.txt" />
     </ItemGroup>
     <MakeDir Directories="$(ReleaseDir)" />
     <Copy SourceFiles="@(ReleaseFiles)" DestinationFolder="$(ReleaseDir)" SkipUnchangedFiles="true" />

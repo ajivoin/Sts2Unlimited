@@ -298,6 +298,7 @@ public static class Sts2Unlimited
 			ApplyChestPatch();
 
 			// Patch difficulty scaling to support player-count override
+			DifficultyPatch.PlayerCountResolver = GetEffectivePlayerCount;
 			DifficultyPatch.Apply(harmony);
 
 			// DifficultySync is compiled into the headless harness, which does not compile this
@@ -309,6 +310,10 @@ public static class Sts2Unlimited
 		catch (Exception e)
 		{
 			Log.LogMessage(LogLevel.Error, LogType.Generic, $"Failed to apply Harmony patches: {e.Message}");
+			// Every patch after the throwing one was skipped, and none of them got a registry
+			// entry -- so without this the load summary would still say "loaded successfully".
+			PatchRegistry.Record("Harmony patch setup", false,
+				detail: $"aborted early, later patches skipped: {e.Message}");
 		}
 	}
 

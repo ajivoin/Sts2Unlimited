@@ -9,12 +9,43 @@ namespace Sts2Unlimited;
 
 public static class DifficultyPatch
 {
+    // The game's logger segfaults outside a game process; the harness swaps this out.
+    internal static Action<LogLevel, string> LogSink =
+        (level, message) => Log.LogMessage(level, LogType.Generic, message);
+
+    // Sts2Unlimited.cs is not compiled into the harness, so the transpiled call goes through
+    // a delegate that ModLoaded wires to Sts2Unlimited.GetEffectivePlayerCount.
+    internal static Func<int, int> PlayerCountResolver = actual => actual;
+
+    public static int EffectivePlayerCount(int actualCount) => PlayerCountResolver(actualCount);
+
+    // v0.113+
+    internal const string ScalingModelTypeName =
+        "MegaCrit.Sts2.Core.Models.MultiplayerScalingModel";
+    // up to v0.112; kept so an older install still gets block scaling
+    internal const string LegacyScalingModelTypeName =
+        "MegaCrit.Sts2.Core.Models.Singleton.MultiplayerScalingModel";
+
+    internal static Type ResolveFirstType(params string[] fullNames)
+    {
+        foreach (var name in fullNames)
+        {
+            var type = Type.GetType($"{name}, sts2", false);
+            if (type != null) return type;
+        }
+        return null;
+    }
+
+    internal static MethodInfo GetModifyBlockMethod()
+        => ResolveFirstType(ScalingModelTypeName, LegacyScalingModelTypeName)
+            ?.GetMethod("ModifyBlockMultiplicative", BindingFlags.Public | BindingFlags.Instance);
+
+    internal static int LastTranspilePatchCount;
+
     private static readonly MethodInfo _getEffectivePlayerCount =
-        typeof(Sts2Unlimited).GetMethod(nameof(Sts2Unlimited.GetEffectivePlayerCount),
+        typeof(DifficultyPatch).GetMethod(nameof(EffectivePlayerCount),
             BindingFlags.Public | BindingFlags.Static)!;
 
-    // Matches callvirt IReadOnlyCollection<Player>::get_Count() — the only .Count call
-    // on a Player collection in each of the three target methods.
     private static bool IsPlayersCountCall(CodeInstruction ci)
     {
         if (ci.opcode != OpCodes.Callvirt) return false;
@@ -25,9 +56,6 @@ public static class DifficultyPatch
         return dt.GetGenericArguments()[0].Name == "Player";
     }
 
-    // Single transpiler shared across all three target methods.
-    // Inserts `call GetEffectivePlayerCount(int)` after each Players.Count call,
-    // so the int on the stack becomes the effective (possibly overridden) count.
     public static IEnumerable<CodeInstruction> Transpile_PlayerCount(
         IEnumerable<CodeInstruction> instructions,
         MethodBase original)
@@ -43,11 +71,13 @@ public static class DifficultyPatch
             patched++;
         }
 
+        LastTranspilePatchCount = patched;
+
         if (patched == 0)
-            Log.LogMessage(LogLevel.Warn, LogType.Generic,
+            LogSink(LogLevel.Warn,
                 $"[DifficultyPatch] No Players.Count call found in {original?.DeclaringType?.Name}.{original?.Name} — patch may be broken.");
         else
-            Log.LogMessage(LogLevel.Debug, LogType.Generic,
+            LogSink(LogLevel.Debug,
                 $"[DifficultyPatch] Patched {patched} Players.Count call(s) in {original?.DeclaringType?.Name}.{original?.Name}.");
 
         return codes;
@@ -62,26 +92,24 @@ public static class DifficultyPatch
         PatchHpScaling(harmony);
 
         // MultiplayerScalingModel — controls enemy block scaling
-        var scalingModelType = Type.GetType(
-            "MegaCrit.Sts2.Core.Models.Singleton.MultiplayerScalingModel, sts2", false);
-        if (scalingModelType != null)
-        {
-            var modifyBlock = scalingModelType.GetMethod(
-                "ModifyBlockMultiplicative", BindingFlags.Public | BindingFlags.Instance);
-            if (modifyBlock != null)
-            {
-                harmony.Patch(modifyBlock, transpiler: transpiler);
-                Log.LogMessage(LogLevel.Info, LogType.Generic,
-                    "[DifficultyPatch] Patched MultiplayerScalingModel.ModifyBlockMultiplicative (block scaling).");
-            }
-            else
-                Log.LogMessage(LogLevel.Warn, LogType.Generic,
-                    "[DifficultyPatch] ModifyBlockMultiplicative not found.");
-
-        }
+        // v0.113.0 moved MultiplayerScalingModel out of Models.Singleton; looked up by its old
+        // name, this hook died behind one Warn line while the mod reported a clean load. It is
+        // registered now, so a miss loads the mod DEGRADED and names this patch.
+        const string blockTarget = "MultiplayerScalingModel.ModifyBlockMultiplicative (block scaling)";
+        var modifyBlock = GetModifyBlockMethod();
+        if (modifyBlock == null)
+            PatchRegistry.Record(blockTarget, false,
+                detail: ResolveFirstType(ScalingModelTypeName, LegacyScalingModelTypeName) == null
+                    ? $"type not found as {ScalingModelTypeName} or {LegacyScalingModelTypeName}"
+                    : "type found, but it has no public ModifyBlockMultiplicative");
         else
-            Log.LogMessage(LogLevel.Warn, LogType.Generic,
-                "[DifficultyPatch] MultiplayerScalingModel type not found.");
+        {
+            harmony.Patch(modifyBlock, transpiler: transpiler);
+            PatchRegistry.Record(blockTarget, LastTranspilePatchCount > 0,
+                detail: "no Players.Count call to rewrite");
+            LogSink(LogLevel.Info,
+                "[DifficultyPatch] Patched MultiplayerScalingModel.ModifyBlockMultiplicative (block scaling).");
+        }
 
         PatchPowerScaling(harmony, transpiler);
     }
@@ -97,12 +125,17 @@ public static class DifficultyPatch
     // CombatState.CreateCreature-only patch did) misses any caller we haven't found — prefixing
     // the shared helper itself instead rewrites playerCount once, covering every current caller
     // and any future one automatically.
+    private const string HpTarget = "Creature.ScaleHpForMultiplayer (HP scaling)";
+    private const string MonsterHpTarget = "Creature.ScaleMonsterHpForMultiplayer (HP scaling)";
+
     private static void PatchHpScaling(Harmony harmony)
     {
         var creatureType = Type.GetType("MegaCrit.Sts2.Core.Entities.Creatures.Creature, sts2", false);
         if (creatureType == null)
         {
-            Log.LogMessage(LogLevel.Warn, LogType.Generic, "[DifficultyPatch] Creature type not found.");
+            LogSink(LogLevel.Warn, "[DifficultyPatch] Creature type not found.");
+            PatchRegistry.Record(HpTarget, false, detail: "Creature type not found");
+            PatchRegistry.Record(MonsterHpTarget, false, detail: "Creature type not found");
             return;
         }
 
@@ -114,12 +147,15 @@ public static class DifficultyPatch
         if (scaleHp != null)
         {
             harmony.Patch(scaleHp, prefix: prefixMethod);
-            Log.LogMessage(LogLevel.Info, LogType.Generic,
-                "[DifficultyPatch] Patched Creature.ScaleHpForMultiplayer (HP scaling — covers " +
+            PatchRegistry.Record(HpTarget, true);
+            LogSink(LogLevel.Info, "[DifficultyPatch] Patched Creature.ScaleHpForMultiplayer (HP scaling — covers " +
                 "phase-transition/revive callers that read Players.Count directly).");
         }
         else
-            Log.LogMessage(LogLevel.Warn, LogType.Generic, "[DifficultyPatch] Creature.ScaleHpForMultiplayer not found.");
+        {
+            LogSink(LogLevel.Warn, "[DifficultyPatch] Creature.ScaleHpForMultiplayer not found.");
+            PatchRegistry.Record(HpTarget, false, detail: "method not found");
+        }
 
         // ScaleMonsterHpForMultiplayer (the instance wrapper CreateCreature actually calls) has
         // its own early-return when playerCount == 1 — it never even calls the static helper
@@ -132,38 +168,26 @@ public static class DifficultyPatch
         if (scaleMonsterHp != null)
         {
             harmony.Patch(scaleMonsterHp, prefix: prefixMethod);
-            Log.LogMessage(LogLevel.Info, LogType.Generic,
-                "[DifficultyPatch] Patched Creature.ScaleMonsterHpForMultiplayer (HP scaling — covers " +
+            PatchRegistry.Record(MonsterHpTarget, true);
+            LogSink(LogLevel.Info, "[DifficultyPatch] Patched Creature.ScaleMonsterHpForMultiplayer (HP scaling — covers " +
                 "initial spawn via CombatState.CreateCreature, including the singleplayer case).");
         }
         else
-            Log.LogMessage(LogLevel.Warn, LogType.Generic, "[DifficultyPatch] Creature.ScaleMonsterHpForMultiplayer not found.");
+        {
+            LogSink(LogLevel.Warn, "[DifficultyPatch] Creature.ScaleMonsterHpForMultiplayer not found.");
+            PatchRegistry.Record(MonsterHpTarget, false, detail: "method not found");
+        }
     }
 
     private static void Prefix_ScaleHpForMultiplayer(ref int playerCount)
     {
         int actual = playerCount;
-        playerCount = Sts2Unlimited.GetEffectivePlayerCount(playerCount);
-        Log.LogMessage(LogLevel.Debug, LogType.Generic,
-            $"[DifficultyPatch] ScaleHpForMultiplayer: actual={actual} -> effective={playerCount} " +
-            $"(OverrideEnabled={Sts2Unlimited.DifficultyOverrideEnabled}, " +
-            $"PlayersOverride={Sts2Unlimited.DifficultyPlayersOverride}, " +
-            $"ScaleSingleplayerEnabled={Sts2Unlimited.DifficultyScaleSingleplayerEnabled})");
+        playerCount = EffectivePlayerCount(playerCount);
+        LogSink(LogLevel.Debug,
+            $"[DifficultyPatch] ScaleHpForMultiplayer: actual={actual} -> effective={playerCount}");
     }
 
-    // As of the current game build, MultiplayerScalingModel.ModifyPowerAmountGiven no longer
-    // exists — power scaling was refactored into PowerModel.GetScaledAmountForMultiplayer
-    // (virtual, reads Players.Count directly) gated by an overridable ShouldScaleInMultiplayer
-    // flag. Several power classes (Artifact, Buffer, Plating, Skittish, Slippery) reimplement
-    // their own Players.Count read rather than deferring to the base, so each needs its own
-    // patch; everything else that opts into ShouldScaleInMultiplayer falls through to the base.
-    //
-    // NOTE: as of this writing, nothing in the game's compiled code actually calls
-    // GetScaledAmountForMultiplayer or ShouldScaleInMultiplayer — verified via full assembly
-    // scan, only a unit-test mock references them. Power-amount scaling therefore currently has
-    // no effect in real gameplay regardless of this patch; it's applied anyway so the override
-    // takes effect automatically once/if MegaCrit wires the hook into the live apply path.
-    private static readonly string[] PowerScalingOverrideTypes =
+    internal static readonly string[] PowerScalingOverrideTypes =
     {
         "MegaCrit.Sts2.Core.Models.PowerModel",
         "MegaCrit.Sts2.Core.Models.Powers.ArtifactPower",
@@ -181,8 +205,7 @@ public static class DifficultyPatch
             var type = Type.GetType($"{typeName}, sts2", false);
             if (type == null)
             {
-                Log.LogMessage(LogLevel.Warn, LogType.Generic,
-                    $"[DifficultyPatch] {typeName} not found — skipping power scaling patch.");
+                LogSink(LogLevel.Warn, $"[DifficultyPatch] {typeName} not found — skipping power scaling patch.");
                 continue;
             }
 
@@ -194,8 +217,7 @@ public static class DifficultyPatch
             patchedCount++;
         }
 
-        Log.LogMessage(LogLevel.Info, LogType.Generic,
-            $"[DifficultyPatch] Patched {patchedCount} GetScaledAmountForMultiplayer method(s) (power scaling). " +
+        LogSink(LogLevel.Info, $"[DifficultyPatch] Patched {patchedCount} GetScaledAmountForMultiplayer method(s) (power scaling). " +
             "Note: this hook has no known live caller in the current game build, so it has no gameplay " +
             "effect yet — patched for forward compatibility only.");
     }

@@ -18,6 +18,7 @@
     <Compile Include="../../DifficultySync.cs" Link="DifficultySync.cs" />
     <Compile Include="../../PatchRegistry.cs" Link="PatchRegistry.cs" />
     <Compile Include="../../ChestPatch.cs" Link="ChestPatch.cs" />
+    <Compile Include="../../DifficultyPatch.cs" Link="DifficultyPatch.cs" />
   </ItemGroup>
 
   <ItemGroup>

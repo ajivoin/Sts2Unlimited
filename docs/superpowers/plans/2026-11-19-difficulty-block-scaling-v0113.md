@@ -637,3 +637,16 @@ git commit -m "test(testkit): live block-scaling scenario, and fail on Difficult
 - The headless harness cannot invoke `ModifyBlockMultiplicative` end to end, because it needs a live `RunState`/`CombatState`. Tasks 4-5 close that gap automatically: the testkit drives a real 2-peer combat and asserts the reporter's exact numbers (99 / 20). Task 5 Step 3 also has to show the scenario fails on the unfixed build.
 - Ordering: Tasks 1-3 (mod, `main`) and Task 4 (kit repo) are independent and can run in parallel. Task 5 needs both of them.
 - Unverified until Task 4 Step 2 runs: whether the console replays a **mod-added** networked command on the client peers. The game registers mod command types on every peer, so it should, and a fallback is written in.
+
+## Execution notes (2026-11-19)
+
+How the run went, and where it differed from the plan:
+
+- **Task 2:** `legacy name is not what this sts2.dll uses` passed before the fix as well as after. That is correct: it asserts the legacy name does *not* resolve. The other four predicted failures failed as expected.
+- **Task 3 + review:** two changes came out of the independent review. The block hook's failure detail now tells a missing type apart from a missing method. The outer `catch` in `ApplyHarmonyPatches` also records a registry failure, so a throwing `harmony.Patch` loads the mod DEGRADED instead of reporting success.
+- **Task 4:** a networked console command runs from the action queue, and the game drops a failed `CmdResult` silently. `moveblock` therefore logs its refusals at Warn. The first live runs showed why: sent too early, it refused on both peers and left no trace.
+- **Task 5:**
+  - The scenario waits for `Combat state becomes PlayPhase` before it sends `moveblock`, because the HP line fires during pre-combat setup.
+  - On v0.113.1, `fight SLIMES_WEAK` rolls its slime lineup separately on each peer, which caused a StateDivergence at the first checksum. Every multi-peer scenario now uses `SHRINKER_BEETLE_WEAK`, a single fixed monster.
+  - Proof: on the unfixed v2.0.0 build, both peers logged `gained=20` and both scenarios failed. On the fix, both peers logged `gained=99` and `gained=20`, and both scenarios passed.
+  - Full live suite on the fix: 8 passed, 3 failed. On re-run, `test_smoke` and `test_dread_treasure` passed, so those were flaky. `test_chest_overflow` failed twice: ENet handshake acks were sent by the host but never reached 5–6 of the clients, which looks like a 7-instance load problem. None of these fail on a pattern this plan added.

@@ -88,11 +88,19 @@ jobs:
       - name: Regenerate PCK with bumped version
         run: .godot-bin/godot --headless --export-pack "Windows Desktop" Sts2Unlimited.pck
 
-      - name: Download sts2.dll from release assets
+      # sts2.dll is all the mod build needs. The headless patch harness also needs the
+      # two Sentry assemblies: sts2.dll's module initializer loads them on first type
+      # access. Without them the harness still builds (MSB3245 is only a warning) and
+      # then crashes at startup, so check for all three here and fail with a clear message.
+      - name: Download game assemblies from release assets
         env:
           GH_TOKEN: ${{ secrets.STS2_DLL_PAT }}
         run: |
-          gh release download deps --pattern "sts2.dll" --repo "${{ github.repository }}"
+          gh release download deps --repo "${{ github.repository }}" \
+            --pattern "sts2.dll" --pattern "Sentry.dll" --pattern "Sentry.Godot.dll"
+          for f in sts2.dll Sentry.dll Sentry.Godot.dll; do
+            [ -f "$f" ] || { echo "::error::$f is missing from the 'deps' release (copy it from <steam>/steamapps/common/Slay the Spire 2/data_sts2_windows_x86_64/)"; exit 1; }
+          done
 
       # The reference assembly is a release asset, not a tracked file, so it can
       # fall behind the game without anything in a diff to show it — it has
@@ -122,6 +130,13 @@ jobs:
         uses: actions/setup-dotnet@v6.0.0
         with:
           dotnet-version: '9.0.x'
+
+      # Binds every patch target, runs the real transpilers over the real game IL,
+      # and checks every game type name the mod looks up by string. Nothing else in
+      # CI runs it, and a broken binding still builds cleanly. Needs all three DLLs
+      # downloaded above.
+      - name: Run headless patch harness
+        run: dotnet run --project tests/PatchTests
 
       - name: Build and bundle
         run: dotnet build --configuration ExportRelease

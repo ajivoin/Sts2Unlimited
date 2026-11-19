@@ -123,6 +123,12 @@ jobs:
         with:
           dotnet-version: '9.0.x'
 
+      # Binds every patch target, runs the real transpilers over the real game IL,
+      # and checks every game type name the mod looks up by string. Nothing else in
+      # CI runs it, and a broken binding still builds cleanly.
+      - name: Run headless patch harness
+        run: dotnet run --project tests/PatchTests
+
       - name: Build and bundle
         run: dotnet build --configuration ExportRelease
         # The BundleRelease MSBuild target copies all mod files to release/

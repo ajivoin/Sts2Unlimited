@@ -99,7 +99,9 @@ public static class DifficultyPatch
         var modifyBlock = GetModifyBlockMethod();
         if (modifyBlock == null)
             PatchRegistry.Record(blockTarget, false,
-                detail: $"not found as {ScalingModelTypeName} or {LegacyScalingModelTypeName}");
+                detail: ResolveFirstType(ScalingModelTypeName, LegacyScalingModelTypeName) == null
+                    ? $"type not found as {ScalingModelTypeName} or {LegacyScalingModelTypeName}"
+                    : "type found, but it has no public ModifyBlockMultiplicative");
         else
         {
             harmony.Patch(modifyBlock, transpiler: transpiler);
